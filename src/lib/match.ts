@@ -122,6 +122,10 @@ export function proposeGroups(state: State): Group[] {
     if (!p.hasCore && !g.attention.includes('No model number found')) g.attention.push('No model number found')
     if (!p.mfr && !g.attention.includes('Manufacturer unknown')) g.attention.push('Manufacturer unknown')
     if (adopted && !g.attention.includes('Manufacturer inferred from model number')) g.attention.push('Manufacturer inferred from model number')
+    if (p.mfrConflict) {
+      const msg = `Source says manufacturer "${p.mfrConflict}" but the name says ${p.mfr}`
+      if (!g.attention.includes(msg)) g.attention.push(msg)
+    }
     if (p.mfrFromHint && !g.attention.includes('Manufacturer guessed from model prefix')) g.attention.push('Manufacturer guessed from model prefix')
   }
 

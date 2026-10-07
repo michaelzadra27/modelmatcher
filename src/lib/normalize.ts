@@ -11,6 +11,7 @@ export interface Parsed {
   key: string // mfrKey|base
   hasCore: boolean // false when no model-number-like token was found
   mfrFromHint: boolean
+  mfrConflict: string // source column said this manufacturer, but the name itself names another
 }
 
 // Explicit brand words → canonical display name.
@@ -140,7 +141,10 @@ function parseName(
 
 export function parse(raw: string, opts: { mfr?: string; desc?: string } = {}): Parsed {
   const given = opts.mfr ? canonMfr(opts.mfr) : ''
-  const det = given ? { mfr: given, hint: false } : detectMfr(raw, opts.desc ?? '')
+  // A brand spelled out in the model name beats the manufacturer column (source columns can be wrong).
+  const named = BRANDS.find(([, re]) => re.test(raw.toUpperCase()))?.[0] ?? ''
+  const mfrConflict = given && named && given !== named ? given : ''
+  const det = named ? { mfr: named, hint: false } : given ? { mfr: given, hint: false } : detectMfr(raw, opts.desc ?? '')
   let p = parseName(raw)
   if (!p && opts.desc) p = parseName(opts.desc)
   if (p) {
@@ -151,10 +155,11 @@ export function parse(raw: string, opts: { mfr?: string; desc?: string } = {}): 
       key: `${mfrKey(det.mfr)}|${p.base}`,
       hasCore: true,
       mfrFromHint: det.hint,
+      mfrConflict,
     }
   }
   const compact = raw.toUpperCase().replace(/[^A-Z0-9]/g, '')
-  return { mfr: det.mfr, base: compact, variant: '', key: `${mfrKey(det.mfr)}|~${compact}`, hasCore: false, mfrFromHint: det.hint }
+  return { mfr: det.mfr, base: compact, variant: '', key: `${mfrKey(det.mfr)}|~${compact}`, hasCore: false, mfrFromHint: det.hint, mfrConflict }
 }
 
 /** Loose text key for "have we seen this exact alias before" (level-1 match). */
