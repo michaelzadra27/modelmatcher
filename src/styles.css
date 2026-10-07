@@ -40,3 +40,5 @@ input[type=checkbox] { width:auto }
 .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:12px }
 .warnbox { background:rgba(242,169,59,.12); border:1px solid var(--warn); color:var(--warn); border-radius:6px; padding:6px 10px; margin-bottom:10px }
 .toast { white-space:pre-line; background:var(--panel); border:1px solid var(--ok); color:var(--ok); border-radius:6px; padding:8px 12px; margin-bottom:12px }
+.bar { position:fixed; left:0; right:0; bottom:0; background:var(--panel); border-top:1px solid var(--line); padding:10px 20px; display:flex; align-items:center; gap:12px }
+.tag.bad { color:var(--bad); border-color:var(--bad) }

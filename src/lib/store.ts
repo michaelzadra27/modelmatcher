@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import { Group, Member, slug } from './match'
+import { Group, Member, proposeGroups, reconcile, slug } from './match'
 import { Canonical, IGNORE, LogEntry, Role, State, emptyState, linkKey } from './types'
 import { importFile } from './workbook'
 
@@ -16,6 +16,7 @@ function load(): State {
 }
 
 let state: State = load()
+export const getState = () => state
 const listeners = new Set<() => void>()
 let saveTimer: number | undefined
 
@@ -62,11 +63,42 @@ export const actions = {
         const r = await importFile(f, state)
         set(r.state)
         msgs.push(r.summary)
+        const auto = actions.autoResolve()
+        if (auto) msgs.push(`${auto} names already matched a known alias and were linked automatically`)
       } catch (e) {
         msgs.push(`${f.name}: could not read (${(e as Error).message})`)
       }
     }
     return msgs.join('\n')
+  },
+
+  /** Make a source the authoritative model list: one canonical model per group of its names. */
+  buildMaster(name: string): { created: number; flagged: number } {
+    const src = state.sources[name]
+    set({ ...state, master: name })
+    const groups = proposeGroups({ ...state, sources: { [name]: src } })
+    const ok = groups.filter((g) => g.existingId || !g.attention.length)
+    actions.approveMany(ok)
+    return { created: ok.filter((g) => !g.existingId).length, flagged: groups.length - ok.length }
+  },
+
+  clearMaster() {
+    set({ ...state, master: '' })
+  },
+
+  /** Link names whose text already matches a confirmed alias (no human needed). Returns how many. */
+  autoResolve(): number {
+    const items = reconcile(state).filter((r) => r.bucket === 'resolved')
+    if (!items.length) return 0
+    set(
+      items.reduce((s, r) => link(s, [{ source: r.source, raw: r.raw }], r.resolvedId!, 'auto-linked'), state)
+    )
+    return items.length
+  },
+
+  /** Confirm a batch of reconcile matches: each name → the canonical model the user picked. */
+  confirmMatches(items: { source: string; raw: string; canonicalId: string }[]) {
+    set(items.reduce((s, i) => link(s, [i], i.canonicalId, 'matched'), state))
   },
 
   setRole(source: string, col: string, role: Role) {

@@ -103,6 +103,10 @@ function importMaster(wb: XLSX.WorkBook, state: State, fileName: string): Import
   })).filter((c) => c.id)
 
   for (const r of sheet<Record<string, string>>('Settings')) {
+    if (r['Role'] === 'master') {
+      next.master = r['Source']
+      continue
+    }
     const s = (next.sources[r['Source']] ??= { name: r['Source'], columns: [], roles: {}, rows: [] })
     s.columns.push(r['Column'])
     s.roles[r['Column']] = r['Role'] as Role
@@ -220,7 +224,10 @@ export function exportMaster(state: State): XLSX.WorkBook {
   )
   add(
     'Settings',
-    Object.values(state.sources).flatMap((s) => s.columns.map((c) => ({ Source: s.name, Column: c, Role: s.roles[c] }))),
+    [
+      ...(state.master ? [{ Source: state.master, Column: '', Role: 'master' }] : []),
+      ...Object.values(state.sources).flatMap((s) => s.columns.map((c) => ({ Source: s.name, Column: c, Role: s.roles[c] }))),
+    ],
     ['Source', 'Column', 'Role']
   )
   return wb

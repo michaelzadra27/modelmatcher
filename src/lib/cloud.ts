@@ -68,7 +68,7 @@ export async function push(state: State, say: Progress): Promise<string> {
   const srcNames = Object.keys(state.sources)
   const srcRows = await must(
     sb.from('sources').upsert(
-      srcNames.map((name) => ({ name, column_roles: state.sources[name].roles, last_imported_at: new Date().toISOString() })),
+      srcNames.map((name) => ({ name, is_master: state.master === name, column_roles: state.sources[name].roles, last_imported_at: new Date().toISOString() })),
       { onConflict: 'name' }
     ).select('id,name'),
     'sources'
@@ -224,10 +224,11 @@ export async function pull(say: Progress): Promise<State> {
   }
 
   say('Sources…')
-  const srcs = await must(sb.from('sources').select('id,name,column_roles'), 'sources')
+  const srcs = await must(sb.from('sources').select('id,name,column_roles,is_master'), 'sources')
   const nameById = new Map<string, string>()
   for (const s of srcs as any[]) {
     nameById.set(s.id, s.name)
+    if (s.is_master) next.master = s.name
     next.sources[s.name] = { name: s.name, columns: Object.keys(s.column_roles ?? {}), roles: { ...(s.column_roles ?? {}) }, rows: [] }
   }
 

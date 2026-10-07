@@ -124,7 +124,7 @@ function parseName(
   // A numeric-leading core ("255") keeps a short non-prefix letter token before it ("TM-255" → TM255).
   if (/^\d/.test(core) && stripped === tokens[idxNum] && idxNum > 0) {
     const prev = tokens[idxNum - 1]
-    if (!hasDigit(prev) && prev.length <= 3 && !NOISE.has(prev) && !PREFIXES.includes(prev)) core = prev + core
+    if (!hasDigit(prev) && prev.length <= 3 && !NOISE.has(prev) && !PREFIXES.includes(prev) && !BRANDS.some(([, re]) => re.test(prev))) core = prev + core
   }
   const m = core.match(/^([A-Z]*\d+)([A-Z0-9]*)$/)
   let base = core
@@ -165,6 +165,11 @@ export function parse(raw: string, opts: { mfr?: string; desc?: string } = {}): 
 /** Loose text key for "have we seen this exact alias before" (level-1 match). */
 export function textKey(s: string): string {
   return s.toUpperCase().replace(/[^A-Z0-9]/g, '')
+}
+
+/** Loose word tokens for fuzzy comparison, without brand/noise words. */
+export function looseTokens(s: string): Set<string> {
+  return new Set(s.toUpperCase().split(/[^A-Z0-9]+/).filter((t) => t.length >= 2 && !NOISE.has(t)))
 }
 
 export function levenshtein(a: string, b: string): number {

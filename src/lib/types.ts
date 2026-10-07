@@ -65,8 +65,9 @@ export interface State {
   canonicals: Canonical[]
   links: Record<string, string> // linkKey(source, raw) → canonical id | IGNORE
   log: LogEntry[]
+  master: string // name of the source treated as the authoritative model list ('' = none)
   deleted: string[] // canonical ids removed locally, still to be deleted in the cloud
 }
 
-export const emptyState = (): State => ({ sources: {}, canonicals: [], links: {}, log: [], deleted: [] })
+export const emptyState = (): State => ({ sources: {}, canonicals: [], links: {}, log: [], deleted: [], master: '' })
 export const linkKey = (source: string, raw: string) => `${source}\u0001${raw}`

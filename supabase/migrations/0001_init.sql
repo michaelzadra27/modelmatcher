@@ -52,6 +52,7 @@ create table if not exists model_variants (
 create table if not exists sources (
   id               uuid primary key default gen_random_uuid(),
   name             text not null unique,      -- "UDCA Models", "Price Book 2026"
+  is_master        boolean not null default false, -- the authoritative model list others reconcile against
   column_roles     jsonb not null default '{}'::jsonb,  -- {"Toner SKU":"supply", ...}
   last_imported_at timestamptz not null default now()
 );

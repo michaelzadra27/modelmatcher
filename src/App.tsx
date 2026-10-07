@@ -1,17 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
 import * as XLSX from 'xlsx'
-import { Group, Member, proposeGroups, similar } from './lib/match'
+import { Group, Member, proposeGroups, reconcile, similar } from './lib/match'
+import ReconcileTab from './Reconcile'
 import { actions, useModelState } from './lib/store'
 import { CANON_FIELDS, Canonical, IGNORE, ROLE_LABEL, Role, State, linkKey } from './lib/types'
 import { exportMaster } from './lib/workbook'
 import { cloudConfigured, pull, push, supabase } from './lib/cloud'
 
-type Tab = 'import' | 'review' | 'master' | 'cloud'
+type Tab = 'import' | 'reconcile' | 'review' | 'master' | 'cloud'
 
 export default function App() {
   const state = useModelState()
   const [tab, setTab] = useState<Tab>(Object.keys(state.sources).length ? 'review' : 'import')
   const groups = useMemo(() => proposeGroups(state), [state.sources, state.canonicals, state.links])
+  const recon = useMemo(() => (state.master ? reconcile(state) : []), [state.sources, state.canonicals, state.links, state.master])
 
   const doExport = () => {
     XLSX.writeFile(exportMaster(state), 'Model Master.xlsx')
@@ -22,9 +24,9 @@ export default function App() {
       <header>
         <h1>Model Master</h1>
         <nav>
-          {(['import', 'review', 'master', 'cloud'] as Tab[]).map((t) => (
+          {((state.master ? ['import', 'reconcile', 'review', 'master', 'cloud'] : ['import', 'review', 'master', 'cloud']) as Tab[]).map((t) => (
             <button key={t} className={tab === t ? 'on' : ''} onClick={() => setTab(t)}>
-              {t === 'import' ? 'Import' : t === 'cloud' ? 'Cloud' : t === 'review' ? `Review (${groups.length})` : `Master (${state.canonicals.length})`}
+              {t === 'import' ? 'Import' : t === 'cloud' ? 'Cloud' : t === 'reconcile' ? `Reconcile (${recon.filter((r) => r.bucket !== 'none').length})` : t === 'review' ? `Review (${groups.length})` : `Master (${state.canonicals.length})`}
             </button>
           ))}
         </nav>
@@ -35,6 +37,7 @@ export default function App() {
       </header>
       <main>
         {tab === 'import' && <ImportTab state={state} groups={groups} go={setTab} />}
+        {tab === 'reconcile' && <ReconcileTab state={state} rows={recon} goReview={() => setTab('review')} />}
         {tab === 'review' && <ReviewTab state={state} groups={groups} />}
         {tab === 'master' && <MasterTab state={state} />}
         {tab === 'cloud' && <CloudTab state={state} />}
@@ -111,8 +114,22 @@ function ImportTab({ state, groups, go }: { state: State; groups: Group[]; go: (
             <div className="card" key={s.name}>
               <div className="row" style={{ marginBottom: 6 }}>
                 <b>{s.name}</b>
+                {state.master === s.name && <span className="tag ok">Master list</span>}
                 <span className="mute">{s.rows.length.toLocaleString()} unique models · column A = model name</span>
                 <div className="spacer" />
+                {state.master === s.name ? (
+                  <button className="btn" onClick={() => actions.clearMaster()}>Not the master</button>
+                ) : (
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      const r = actions.buildMaster(s.name)
+                      setMsg(`Master list built from "${s.name}": ${r.created} models created${r.flagged ? `, ${r.flagged} groups flagged for review` : ''}. Import other sources next, then reconcile them.`)
+                    }}
+                  >
+                    Use as master list
+                  </button>
+                )}
                 <button className="btn danger" onClick={() => confirm(`Remove source "${s.name}" and its links?`) && actions.removeSource(s.name)}>
                   Remove
                 </button>

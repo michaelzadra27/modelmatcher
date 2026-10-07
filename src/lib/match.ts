@@ -1,4 +1,4 @@
-import { Parsed, canonMfr, levenshtein, mfrKey, parse, textKey } from './normalize'
+import { Parsed, canonMfr, levenshtein, looseTokens, mfrKey, parse, textKey } from './normalize'
 import { Canonical, IGNORE, Row, Source, State, linkKey } from './types'
 
 export interface RowCtx {
@@ -179,3 +179,105 @@ export function similar(g: Group, groups: Group[], canonicals: Canonical[]): Can
 }
 
 export const slug = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '')
+
+/* ── Reconcile: match another source's names against the master model list ── */
+
+export type Bucket = 'resolved' | 'confident' | 'review' | 'none'
+export type Kind = 'exact' | 'truncation' | 'core' | 'contains' | 'fuzzy'
+
+export interface RCandidate {
+  id: string
+  label: string
+  kind: Kind
+  score: number
+}
+
+export interface ReconRow {
+  source: string
+  raw: string
+  count: number
+  mfr: string
+  variant: string
+  bucket: Bucket
+  candidates: RCandidate[]
+  resolvedId?: string
+}
+
+const digitsOnly = (s: string) => s.replace(/\D/g, '')
+
+function relate(rowBase: string, canonBase: string): { kind: Kind; score: number } | null {
+  if (!rowBase || !canonBase) return null
+  if (rowBase === canonBase) return { kind: 'exact', score: 1 }
+  const [lo, hi] = rowBase.length <= canonBase.length ? [rowBase, canonBase] : [canonBase, rowBase]
+  if (hi.startsWith(lo) && /^[A-Z]+$/.test(hi.slice(lo.length))) return { kind: 'truncation', score: 0.9 }
+  const da = digitsOnly(rowBase)
+  if (da && da === digitsOnly(canonBase)) return { kind: 'core', score: 0.7 }
+  if (rowBase.includes(canonBase) || canonBase.includes(rowBase)) return { kind: 'contains', score: 0.5 }
+  return null
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (!a.size || !b.size) return 0
+  let inter = 0
+  for (const t of a) if (b.has(t)) inter++
+  return inter / (a.size + b.size - inter)
+}
+
+/** Bucket every unreviewed name from the non-master sources against the existing canonical models. */
+export function reconcile(state: State): ReconRow[] {
+  const aliasText = new Map<string, string>()
+  for (const s of Object.values(state.sources))
+    for (const r of s.rows) {
+      const l = state.links[linkKey(s.name, r.raw)]
+      if (l && l !== IGNORE) aliasText.set(textKey(r.raw), l)
+    }
+
+  const canon = state.canonicals.map((c) => ({ c, p: canonParsed(c), tokens: looseTokens(`${c.family} ${c.model}`) }))
+  const byMfr = new Map<string, typeof canon>()
+  for (const x of canon) {
+    const k = mfrKey(x.p.mfr)
+    byMfr.set(k, [...(byMfr.get(k) ?? []), x])
+  }
+
+  const out: ReconRow[] = []
+  for (const s of Object.values(state.sources)) {
+    if (s.name === state.master) continue
+    for (const r of s.rows) {
+      if (state.links[linkKey(s.name, r.raw)]) continue
+      const ctx = rowCtx(s, r)
+      const p = parse(r.raw, { mfr: ctx.mfr, desc: ctx.desc })
+      const base = { source: s.name, raw: r.raw, count: r.count, mfr: p.mfr, variant: p.variant }
+
+      const hit = aliasText.get(textKey(r.raw))
+      if (hit) {
+        out.push({ ...base, bucket: 'resolved', candidates: [], resolvedId: hit })
+        continue
+      }
+      const pool = p.mfr ? byMfr.get(mfrKey(p.mfr)) ?? [] : canon
+      const found = new Map<string, RCandidate>()
+      if (p.hasCore)
+        for (const x of pool) {
+          if (!x.p.hasCore) continue
+          const rel = relate(p.base, x.p.base)
+          if (rel) found.set(x.c.id, { id: x.c.id, label: `${x.c.manufacturer} ${x.c.model}`.trim(), ...rel })
+        }
+      const strongest = Math.max(0, ...[...found.values()].map((c) => c.score))
+      if (strongest < 0.7) {
+        const rt = looseTokens(r.raw)
+        for (const x of pool) {
+          if (found.has(x.c.id)) continue
+          const f = jaccard(rt, x.tokens)
+          if (f >= 0.34) found.set(x.c.id, { id: x.c.id, label: `${x.c.manufacturer} ${x.c.model}`.trim(), kind: 'fuzzy', score: Math.min(0.6, f) })
+        }
+      }
+      const candidates = [...found.values()].sort((a, b) => b.score - a.score).slice(0, 8)
+      let bucket: Bucket = 'none'
+      if (candidates.length) {
+        const unique = candidates[0].score >= 0.9 && (candidates.length === 1 || candidates[1].score < 0.9)
+        bucket = unique ? 'confident' : 'review'
+      }
+      out.push({ ...base, bucket, candidates })
+    }
+  }
+  return out
+}
