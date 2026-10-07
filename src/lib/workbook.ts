@@ -10,13 +10,23 @@ function guessRole(header: string): Role {
   if (/manufact|brand|make|vendor|oem/.test(h)) return 'manufacturer'
   if (/famil|series/.test(h)) return 'family'
   if (/device.?type|^type$|categor|class/.test(h)) return 'deviceType'
-  if (/desc/.test(h)) return 'description'
+  if (/desc|^model\d*$/.test(h)) return 'description'
   if (/toner|supply|supplies|cartridge|sku|part.?n|item.?(no|num|#)/.test(h)) return 'supply'
   if (/price|msrp|cost|dealer|srp|list/.test(h)) return 'price'
   return 'linked'
 }
 
 const str = (v: unknown) => (v == null ? '' : String(v).trim())
+
+/** Excel date serials (e.g. 48563) in date-like columns become ISO dates (2032-12-31). */
+function cell(header: string, v: unknown): string {
+  const t = str(v)
+  if (/date|end of life|eol|discontinu|intro/i.test(header) && /^\d{5}$/.test(t)) {
+    const d = new Date(Math.round((Number(t) - 25569) * 86400000))
+    if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10)
+  }
+  return t
+}
 
 /** Merge rows into a source, collapsing duplicates by name (case-insensitive). */
 function addRows(src: Source, incoming: { raw: string; attrs: Record<string, string> }[]) {
@@ -71,7 +81,7 @@ export async function importFile(file: File, state: State): Promise<ImportResult
       if (!raw) continue
       const attrs: Record<string, string> = {}
       headers.forEach((h, i) => {
-        if (i > 0 && h) attrs[h] = str(r[i])
+        if (i > 0 && h) attrs[h] = cell(h, r[i])
       })
       incoming.push({ raw, attrs })
     }
