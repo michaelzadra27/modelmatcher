@@ -11,6 +11,8 @@ export interface Parsed {
   key: string // mfrKey|base
   hasCore: boolean // false when no model-number-like token was found
   mfrFromHint: boolean
+  line: string // product line (IR, IFORCE, LASERJET...), '' when the name does not say
+  gen: string // generation marker: II, III, IV, '' when none
   mfrConflict: string // source column said this manufacturer, but the name itself names another
 }
 
@@ -87,6 +89,46 @@ export function mfrKey(m: string): string {
   return m ? m.toUpperCase().replace(/[^A-Z0-9]/g, '') : 'UNKNOWN'
 }
 
+// Product lines. A model number can be reused across lines (Canon imageFORCE 1643 vs iR1643i),
+// so the line is part of a model's identity. Names that do not mention a line are wildcards.
+const LINES: [string, RegExp][] = [
+  ['IFORCE', /IMAGEFORCE/],
+  ['ICLASS', /IMAGECLASS/],
+  ['IPR', /IMAGEPRESS|\bIPR\b/],
+  ['IPF', /\bIPF|\bPRO-\d/],
+  ['IR', /IMAGERUNNER|\bIR(?![A-Z])/],
+  ['MAXIFY', /MAXIFY/],
+  ['PIXMA', /PIXMA/],
+  ['LASERJET', /LASERJET|\bLJ\b/],
+  ['DESIGNJET', /DESIGNJET/],
+  ['PAGEWIDE', /PAGEWIDE/],
+  ['OFFICEJET', /OFFICEJET/],
+  ['DESKJET', /DESKJET/],
+  ['LATEX', /\bLATEX\b/],
+  ['BIZHUB', /BIZHUB/],
+  ['ACCURIO', /ACCURIO/],
+  ['WORKCENTRE', /WORKCENTRE|WORKCENTER/],
+  ['VERSALINK', /VERSALINK/],
+  ['ALTALINK', /ALTALINK/],
+  ['PHASER', /PHASER/],
+  ['ECOSYS', /ECOSYS/],
+  ['TASKALFA', /TASKALFA/],
+  ['AFICIO', /AFICIO/],
+  ['SURECOLOR', /SURECOLOR/],
+  ['WORKFORCE', /WORKFORCE/],
+  ['ECOTANK', /ECOTANK/],
+]
+
+export function detectLine(...texts: string[]): string {
+  for (const t of texts) {
+    const up = t.toUpperCase()
+    for (const [l, re] of LINES) if (re.test(up)) return l
+  }
+  return ''
+}
+
+const GENERATION = /^(II|III|IV)$/
+
 function tokenize(s: string): string[] {
   return s
     .toUpperCase()
@@ -111,9 +153,11 @@ function stripPrefix(t: string): string {
 
 function parseName(
   name: string
-): { base: string; variant: string } | null {
+): { base: string; variant: string; gen: string } | null {
   // Version strings like "v1.2.07" are not model numbers.
-  const tokens = tokenize(name).filter((t) => !/^V\d+$/.test(t))
+  const all = tokenize(name).filter((t) => !/^V\d+$/.test(t))
+  const gen = all.find((t) => GENERATION.test(t)) ?? ''
+  const tokens = all.filter((t) => !GENERATION.test(t))
   // Candidate tokens that contain a digit, ignoring noise words.
   const idx = tokens.findIndex((t) => hasDigit(t) && hasLetter(t) && !NOISE.has(t))
   const idxNum = idx >= 0 ? idx : tokens.findIndex((t) => hasDigit(t))
@@ -136,7 +180,7 @@ function parseName(
   // A short letters-only token right after the core ("M428 FDW") is part of the variant.
   const next = tokens[idxNum + 1]
   if (next && !hasDigit(next) && next.length <= 4 && !NOISE.has(next)) rest = next
-  return { base, variant: variant + rest }
+  return { base, variant: variant + rest, gen }
 }
 
 export function parse(raw: string, opts: { mfr?: string; desc?: string } = {}): Parsed {
@@ -155,11 +199,13 @@ export function parse(raw: string, opts: { mfr?: string; desc?: string } = {}): 
       key: `${mfrKey(det.mfr)}|${p.base}`,
       hasCore: true,
       mfrFromHint: det.hint,
+      line: detectLine(raw, opts.desc ?? ''),
+      gen: p.gen,
       mfrConflict,
     }
   }
   const compact = raw.toUpperCase().replace(/[^A-Z0-9]/g, '')
-  return { mfr: det.mfr, base: compact, variant: '', key: `${mfrKey(det.mfr)}|~${compact}`, hasCore: false, mfrFromHint: det.hint, mfrConflict }
+  return { mfr: det.mfr, base: compact, variant: '', key: `${mfrKey(det.mfr)}|~${compact}`, hasCore: false, mfrFromHint: det.hint, line: '', gen: '', mfrConflict }
 }
 
 /** Loose text key for "have we seen this exact alias before" (level-1 match). */

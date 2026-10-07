@@ -21,9 +21,11 @@ create table if not exists manufacturers (
 -- ── Canonical models ───────────────────────────────────────────────────────
 create table if not exists models (
   id              uuid primary key default gen_random_uuid(),
-  canonical_key   text not null unique,       -- stable human-readable id, e.g. HP-M428
+  canonical_key   text not null unique,       -- immutable public id, e.g. MM-000123. Never changes, never reused; other apps store this.
   manufacturer_id uuid references manufacturers(id) on delete set null,
   model           text not null,              -- e.g. M428
+  generation      text,                       -- II, III, IV (a new generation is a new model)
+  line            text,                       -- product line: IR, IFORCE, LASERJET... (same number can recur across lines)
   family          text,
   device_type     text,                       -- BW-MFP, CLR-SFP, ...
   ppm             integer,
@@ -37,6 +39,12 @@ create table if not exists models (
 );
 create index if not exists idx_models_manufacturer on models(manufacturer_id);
 create index if not exists idx_models_type on models(device_type);
+
+-- Retired ids (after merging two models) keep resolving to the survivor.
+create table if not exists model_redirects (
+  old_key  text primary key,
+  model_id uuid not null references models(id) on delete cascade
+);
 
 -- ── Variants (fdw / fdn / dw ...) ──────────────────────────────────────────
 create table if not exists model_variants (
@@ -162,6 +170,16 @@ join sources s on s.id = a.source_id
 join models m on m.id = a.model_id
 left join model_variants v on v.id = a.variant_id;
 
+-- Follow a stored public id (possibly retired by a merge) to the live model.
+create or replace function resolve_key(p_key text)
+returns table (model_id uuid, canonical_key text, redirected boolean)
+language sql stable as $$
+  select m.id, m.canonical_key, false from models m where m.canonical_key = p_key
+  union all
+  select m.id, m.canonical_key, true from model_redirects r join models m on m.id = r.model_id where r.old_key = p_key
+  limit 1
+$$;
+
 -- ── Lookup: raw text → canonical model (the call other apps make) ──────────
 create or replace function resolve_model(p_name text)
 returns table (model_id uuid, canonical_key text, variant text, matches integer)
@@ -182,7 +200,7 @@ do $$
 declare t text;
 begin
   foreach t in array array['manufacturers','models','model_variants','sources','model_aliases',
-                           'supplies','model_supplies','price_lists','price_entries','review_log']
+                           'supplies','model_supplies','price_lists','price_entries','review_log','model_redirects']
   loop
     execute format('alter table %I enable row level security', t);
     execute format('drop policy if exists "authenticated full access" on %I', t);

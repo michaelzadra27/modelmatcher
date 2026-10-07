@@ -1,5 +1,5 @@
 import { Parsed, canonMfr, levenshtein, looseTokens, mfrKey, parse, textKey } from './normalize'
-import { Canonical, IGNORE, Row, Source, State, linkKey } from './types'
+import { Canonical, IGNORE, Row, Source, State, linkKey, modelLabel } from './types'
 
 export interface RowCtx {
   mfr: string
@@ -30,7 +30,7 @@ export interface Member {
 
 export interface Group {
   id: string
-  existingId: string | null // set when the group auto-matches a canonical model
+  existingId: string | null // set when the group matches a canonical model
   matchedBy: 'alias' | 'model' | null
   mfr: string
   base: string
@@ -46,14 +46,32 @@ function mostCommon(values: string[]): string {
   return [...m.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? ''
 }
 
+/** A canonical model's identity as a parse result: its own line/generation fields win. */
 function canonParsed(c: Canonical): Parsed {
-  return parse(c.model, { mfr: c.manufacturer })
+  const p = parse(c.model, { mfr: c.manufacturer })
+  return { ...p, line: c.line ?? '', gen: c.generation ?? '' }
 }
 
-/** Group every unreviewed source row by manufacturer + model number. */
+/** Same line, or at least one side does not say (a wildcard). */
+const lineCompat = (a: string, b: string) => !a || !b || a === b
+
+type Item = { m: Member; p: Parsed }
+type Canon = { c: Canonical; p: Parsed; tokens: Set<string> }
+
+function indexCanon(canonicals: Canonical[]): Canon[] {
+  return canonicals.map((c) => ({ c, p: canonParsed(c), tokens: looseTokens(`${c.family} ${c.model}`) }))
+}
+
+/** The single canonical model with this exact manufacturer + number + generation (line may be unspecified). */
+function uniqueIdentity(p: Parsed, canon: Canon[]): string | null {
+  if (!p.hasCore) return null
+  const hits = canon.filter((x) => x.p.hasCore && x.p.key === p.key && x.p.gen === p.gen && lineCompat(x.p.line, p.line))
+  return hits.length === 1 ? hits[0].c.id : null
+}
+
+/** Group every unreviewed source row by manufacturer + model number + generation + product line. */
 export function proposeGroups(state: State): Group[] {
-  const canonByKey = new Map<string, string>()
-  for (const c of state.canonicals) canonByKey.set(canonParsed(c).key, c.id)
+  const canon = indexCanon(state.canonicals)
 
   // Level 1: loose text of every alias already linked to a canonical model.
   const aliasText = new Map<string, string>()
@@ -64,7 +82,6 @@ export function proposeGroups(state: State): Group[] {
     }
   }
 
-  type Item = { m: Member; p: Parsed }
   const items: Item[] = []
   for (const s of Object.values(state.sources)) {
     for (const r of s.rows) {
@@ -84,10 +101,14 @@ export function proposeGroups(state: State): Group[] {
     owners.set(p.base, set)
   }
   items.forEach((i) => note(i.p))
-  state.canonicals.forEach((c) => note(canonParsed(c)))
+  canon.forEach((x) => note(x.p))
 
-  const groups = new Map<string, Group & { _p: Parsed }>()
-  for (const { m, p0 } of items.map((i) => ({ m: i.m, p0: i.p }))) {
+  type Entry = { m: Member; p: Parsed; adopted: boolean }
+  type Draft = { existingId: string | null; matchedBy: Group['matchedBy']; items: Entry[] }
+  const existing = new Map<string, Draft>()
+  const pools = new Map<string, Draft>() // mfr|base|gen → pending names, split by line below
+
+  for (const { m, p: p0 } of items) {
     let p = p0
     let adopted = false
     if (!p.mfr && p.hasCore) {
@@ -99,49 +120,89 @@ export function proposeGroups(state: State): Group[] {
       }
     }
     const byAlias = aliasText.get(textKey(m.raw)) ?? null
-    const byModel = canonByKey.get(p.key) ?? null
+    const byModel = byAlias ? null : uniqueIdentity(p, canon)
     const existingId = byAlias ?? byModel
-    const gid = existingId ? `C:${existingId}` : `N:${p.key}`
-    let g = groups.get(gid)
-    if (!g) {
-      g = {
-        id: gid,
-        existingId,
-        matchedBy: byAlias ? 'alias' : byModel ? 'model' : null,
-        mfr: p.mfr,
-        base: p.base,
-        members: [],
-        sources: [],
-        attention: [],
-        draft: { manufacturer: p.mfr, model: p.base, family: '', deviceType: '', ppm: '', color: '', paper: '', toner: '', notes: '' },
-        _p: p,
-      }
-      groups.set(gid, g)
+    if (existingId) {
+      const d = existing.get(existingId) ?? { existingId, matchedBy: byAlias ? ('alias' as const) : ('model' as const), items: [] }
+      d.items.push({ m, p, adopted })
+      existing.set(existingId, d)
+    } else {
+      const pk = `${p.key}|${p.gen}`
+      const d = pools.get(pk) ?? { existingId: null, matchedBy: null, items: [] }
+      d.items.push({ m, p, adopted })
+      pools.set(pk, d)
     }
-    g.members.push(m)
-    if (!p.hasCore && !g.attention.includes('No model number found')) g.attention.push('No model number found')
-    if (!p.mfr && !g.attention.includes('Manufacturer unknown')) g.attention.push('Manufacturer unknown')
-    if (adopted && !g.attention.includes('Manufacturer inferred from model number')) g.attention.push('Manufacturer inferred from model number')
-    if (p.mfrConflict) {
-      const msg = `Source says manufacturer "${p.mfrConflict}" but the name says ${p.mfr}`
-      if (!g.attention.includes(msg)) g.attention.push(msg)
+  }
+
+  // Split each pending pool by product line. Names that do not state a line join the biggest line.
+  const drafts: { id: string; d: Draft; line: string; mixed: boolean }[] = []
+  for (const [id, d] of existing) drafts.push({ id: `C:${id}`, d, line: '', mixed: false })
+  for (const [pk, d] of pools) {
+    const lines = new Map<string, Entry[]>()
+    for (const it of d.items) if (it.p.line) lines.set(it.p.line, [...(lines.get(it.p.line) ?? []), it])
+    if (lines.size <= 1) {
+      drafts.push({ id: `N:${pk}`, d, line: [...lines.keys()][0] ?? '', mixed: false })
+      continue
     }
-    if (p.mfrFromHint && !g.attention.includes('Manufacturer guessed from model prefix')) g.attention.push('Manufacturer guessed from model prefix')
+    const blank = d.items.filter((it) => !it.p.line)
+    const biggest = [...lines.entries()].sort((a, b) => b[1].length - a[1].length)[0][0]
+    for (const [line, its] of lines)
+      drafts.push({
+        id: `N:${pk}|${line}`,
+        d: { existingId: null, matchedBy: null, items: line === biggest ? [...its, ...blank] : its },
+        line,
+        mixed: line === biggest && blank.length > 0,
+      })
   }
 
   const out: Group[] = []
-  for (const g of groups.values()) {
-    g.sources = [...new Set(g.members.map((m) => m.source))]
-    const types = [...new Set(g.members.map((m) => m.ctx.deviceType).filter(Boolean))]
-    if (types.length > 1) g.attention.push(`Conflicting device types: ${types.join(', ')}`)
-    const mfrTxt = g.mfr || mostCommon(g.members.map((m) => canonMfr(m.ctx.mfr)))
-    g.draft.manufacturer = mfrTxt
-    g.draft.model = g.base
-    g.draft.family = mostCommon(g.members.map((m) => m.ctx.family)) || `${mfrTxt} ${g.base}`.trim()
-    g.draft.deviceType = mostCommon(g.members.map((m) => m.ctx.deviceType))
-    out.push(g)
+  for (const { id, d, line, mixed } of drafts) {
+    const first = d.items[0].p
+    const attention: string[] = []
+    const add = (s: string) => attention.includes(s) || attention.push(s)
+    for (const { p, adopted } of d.items) {
+      if (!p.hasCore) add('No model number found')
+      if (!p.mfr) add('Manufacturer unknown')
+      if (adopted) add('Manufacturer inferred from model number')
+      if (p.mfrFromHint) add('Manufacturer guessed from model prefix')
+      if (p.mfrConflict) add(`Source says manufacturer "${p.mfrConflict}" but the name says ${p.mfr}`)
+    }
+    if (mixed) add(`Some names do not state a product line; placed with ${line}`)
+    const members = d.items.map((i) => i.m)
+    const types = [...new Set(members.map((m) => m.ctx.deviceType).filter(Boolean))]
+    if (types.length > 1) add(`Conflicting device types: ${types.join(', ')}`)
+    const mfr = first.mfr || mostCommon(members.map((m) => canonMfr(m.ctx.mfr)))
+    out.push({
+      id,
+      existingId: d.existingId,
+      matchedBy: d.matchedBy,
+      mfr,
+      base: first.base,
+      members,
+      sources: [...new Set(members.map((m) => m.source))],
+      attention,
+      draft: {
+        manufacturer: mfr,
+        model: first.base,
+        generation: first.gen,
+        line,
+        family: mostCommon(members.map((m) => m.ctx.family)) || `${mfr} ${first.base}`.trim(),
+        deviceType: mostCommon(members.map((m) => m.ctx.deviceType)),
+        ppm: '',
+        color: '',
+        paper: '',
+        toner: '',
+        notes: '',
+      },
+    })
   }
-  return out.sort((a, b) => Number(a.attention.length > 0) - Number(b.attention.length > 0) || a.mfr.localeCompare(b.mfr) || a.base.localeCompare(b.base, undefined, { numeric: true }))
+  return out.sort(
+    (a, b) =>
+      Number(a.attention.length > 0) - Number(b.attention.length > 0) ||
+      a.mfr.localeCompare(b.mfr) ||
+      a.base.localeCompare(b.base, undefined, { numeric: true }) ||
+      a.draft.generation.localeCompare(b.draft.generation)
+  )
 }
 
 export interface Candidate {
@@ -166,19 +227,17 @@ export function similar(g: Group, groups: Group[], canonicals: Canonical[]): Can
   for (const c of canonicals) {
     if (g.existingId === c.id) continue
     const p = canonParsed(c)
-    if (mfrKey(p.mfr) !== mk) continue
-    const s = near(p.base)
-    if (s) out.push({ label: `${c.manufacturer} ${c.model}`, score: s, canonicalId: c.id })
+    // Same number but a different generation/line is the most useful suggestion of all.
+    const s = mfrKey(p.mfr) === mk && p.base === g.base ? 0.95 : mfrKey(p.mfr) === mk ? near(p.base) : 0
+    if (s) out.push({ label: modelLabel(c), score: s, canonicalId: c.id })
   }
   for (const o of groups) {
     if (o.id === g.id || o.existingId || mfrKey(o.mfr) !== mk) continue
-    const s = near(o.base)
-    if (s) out.push({ label: `${o.mfr} ${o.base} (pending group)`, score: s, groupId: o.id })
+    const s = o.base === g.base ? 0.95 : near(o.base)
+    if (s) out.push({ label: `${o.mfr} ${o.base} ${o.draft.generation} (pending group)`.replace(/ +/g, ' '), score: s, groupId: o.id })
   }
   return out.sort((a, b) => b.score - a.score).slice(0, 5)
 }
-
-export const slug = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '')
 
 /* ── Reconcile: match another source's names against the master model list ── */
 
@@ -190,6 +249,7 @@ export interface RCandidate {
   label: string
   kind: Kind
   score: number
+  note?: string
 }
 
 export interface ReconRow {
@@ -232,8 +292,8 @@ export function reconcile(state: State): ReconRow[] {
       if (l && l !== IGNORE) aliasText.set(textKey(r.raw), l)
     }
 
-  const canon = state.canonicals.map((c) => ({ c, p: canonParsed(c), tokens: looseTokens(`${c.family} ${c.model}`) }))
-  const byMfr = new Map<string, typeof canon>()
+  const canon = indexCanon(state.canonicals)
+  const byMfr = new Map<string, Canon[]>()
   for (const x of canon) {
     const k = mfrKey(x.p.mfr)
     byMfr.set(k, [...(byMfr.get(k) ?? []), x])
@@ -259,7 +319,18 @@ export function reconcile(state: State): ReconRow[] {
         for (const x of pool) {
           if (!x.p.hasCore) continue
           const rel = relate(p.base, x.p.base)
-          if (rel) found.set(x.c.id, { id: x.c.id, label: `${x.c.manufacturer} ${x.c.model}`.trim(), ...rel })
+          if (!rel) continue
+          // A different product line is a different model, even with the same number.
+          if (!lineCompat(p.line, x.p.line)) continue
+          let { score } = rel
+          let note: string | undefined
+          if (p.gen !== x.p.gen) {
+            // Two stated generations that differ are different models; one unstated is a guess.
+            if (p.gen && x.p.gen) continue
+            score = Math.min(score, 0.75)
+            note = x.p.gen ? `model is ${x.p.gen}, name does not say` : `name says ${p.gen}, model has none`
+          }
+          found.set(x.c.id, { id: x.c.id, label: modelLabel(x.c), kind: rel.kind, score, note })
         }
       const strongest = Math.max(0, ...[...found.values()].map((c) => c.score))
       if (strongest < 0.7) {
@@ -267,7 +338,7 @@ export function reconcile(state: State): ReconRow[] {
         for (const x of pool) {
           if (found.has(x.c.id)) continue
           const f = jaccard(rt, x.tokens)
-          if (f >= 0.34) found.set(x.c.id, { id: x.c.id, label: `${x.c.manufacturer} ${x.c.model}`.trim(), kind: 'fuzzy', score: Math.min(0.6, f) })
+          if (f >= 0.34) found.set(x.c.id, { id: x.c.id, label: modelLabel(x.c), kind: 'fuzzy', score: Math.min(0.6, f) })
         }
       }
       const candidates = [...found.values()].sort((a, b) => b.score - a.score).slice(0, 8)

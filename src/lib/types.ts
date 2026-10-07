@@ -29,6 +29,8 @@ export interface Canonical {
   id: string
   manufacturer: string
   model: string
+  line: string // product line, e.g. IR, IFORCE, LASERJET
+  generation: string // II, III, IV or ''
   family: string
   deviceType: string
   ppm: string
@@ -41,6 +43,8 @@ export interface Canonical {
 export const CANON_FIELDS: { key: keyof Canonical; label: string }[] = [
   { key: 'manufacturer', label: 'Manufacturer' },
   { key: 'model', label: 'Canonical model' },
+  { key: 'generation', label: 'Generation (II, III…)' },
+  { key: 'line', label: 'Product line' },
   { key: 'family', label: 'Family' },
   { key: 'deviceType', label: 'Device type' },
   { key: 'ppm', label: 'PPM' },
@@ -49,6 +53,14 @@ export const CANON_FIELDS: { key: keyof Canonical; label: string }[] = [
   { key: 'toner', label: 'Toner family' },
   { key: 'notes', label: 'Notes' },
 ]
+
+export const fmtId = (n: number) => `MM-${String(n).padStart(6, '0')}`
+export const idNumber = (id: string) => {
+  const m = id.match(/^MM-(\d+)$/)
+  return m ? Number(m[1]) : 0
+}
+export const modelLabel = (c: Pick<Canonical, 'manufacturer' | 'model' | 'generation'>) =>
+  [c.manufacturer, c.model, c.generation].filter(Boolean).join(' ')
 
 export const IGNORE = '__ignore__'
 
@@ -65,9 +77,11 @@ export interface State {
   canonicals: Canonical[]
   links: Record<string, string> // linkKey(source, raw) → canonical id | IGNORE
   log: LogEntry[]
+  nextId: number // next MM-###### number to hand out; ids are never reused
+  redirects: Record<string, string> // retired id → surviving id (after a merge)
   master: string // name of the source treated as the authoritative model list ('' = none)
   deleted: string[] // canonical ids removed locally, still to be deleted in the cloud
 }
 
-export const emptyState = (): State => ({ sources: {}, canonicals: [], links: {}, log: [], deleted: [], master: '' })
+export const emptyState = (): State => ({ sources: {}, canonicals: [], links: {}, log: [], deleted: [], nextId: 1, redirects: {}, master: '' })
 export const linkKey = (source: string, raw: string) => `${source}\u0001${raw}`

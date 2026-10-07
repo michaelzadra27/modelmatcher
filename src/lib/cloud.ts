@@ -1,7 +1,7 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import { parse } from './normalize'
 import { rowCtx } from './match'
-import { Canonical, IGNORE, Role, Row, State, emptyState, linkKey } from './types'
+import { Canonical, IGNORE, Role, Row, State, emptyState, idNumber, linkKey } from './types'
 
 const url = import.meta.env.VITE_SUPABASE_URL as string | undefined
 const anon = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
@@ -49,6 +49,8 @@ export async function push(state: State, say: Progress): Promise<string> {
           canonical_key: c.id,
           manufacturer_id: mfrId.get(c.manufacturer) ?? null,
           model: c.model,
+          generation: c.generation || null,
+          line: c.line || null,
           family: c.family || null,
           device_type: c.deviceType || null,
           ppm: toInt(c.ppm),
@@ -63,6 +65,12 @@ export async function push(state: State, say: Progress): Promise<string> {
     )
     rows.forEach((r: any) => modelId.set(r.canonical_key, r.id))
   }
+
+  // Retired ids from merges keep resolving to the surviving model.
+  const redirects = Object.entries(state.redirects)
+    .filter(([, to]) => modelId.has(to))
+    .map(([old_key, to]) => ({ old_key, model_id: modelId.get(to)! }))
+  for (const part of chunks(redirects, 500)) await must(sb.from('model_redirects').upsert(part, { onConflict: 'old_key' }), 'redirects')
 
   say('Sources…')
   const srcNames = Object.keys(state.sources)
@@ -202,7 +210,7 @@ export async function pull(say: Progress): Promise<State> {
   say('Models…')
   const models: any[] = []
   for (let from = 0; ; from += 1000) {
-    const rows = await must(sb.from('models').select('id,canonical_key,model,family,device_type,ppm,color,paper_size,toner_family,notes,manufacturers(name)').range(from, from + 999), 'models')
+    const rows = await must(sb.from('models').select('id,canonical_key,model,generation,line,family,device_type,ppm,color,paper_size,toner_family,notes,manufacturers(name)').range(from, from + 999), 'models')
     models.push(...rows)
     if (rows.length < 1000) break
   }
@@ -213,6 +221,8 @@ export async function pull(say: Progress): Promise<State> {
       id: m.canonical_key,
       manufacturer: m.manufacturers?.name ?? '',
       model: m.model,
+      generation: m.generation ?? '',
+      line: m.line ?? '',
       family: m.family ?? '',
       deviceType: m.device_type ?? '',
       ppm: m.ppm == null ? '' : String(m.ppm),
@@ -248,6 +258,11 @@ export async function pull(say: Progress): Promise<State> {
     if (a.status === 'ignored') next.links[linkKey(src.name, a.raw_name)] = IGNORE
     else if (a.status === 'linked' && a.model_id && keyById.has(a.model_id)) next.links[linkKey(src.name, a.raw_name)] = keyById.get(a.model_id)!
   }
+
+  say('Redirects…')
+  const reds = await must(sb.from('model_redirects').select('old_key,models(canonical_key)'), 'redirects')
+  for (const r of reds as any[]) if (r.models?.canonical_key) next.redirects[r.old_key] = r.models.canonical_key
+  next.nextId = 1 + Math.max(0, ...next.canonicals.map((c) => idNumber(c.id)), ...Object.keys(next.redirects).map(idNumber))
 
   say('Review log…')
   const log: any[] = []

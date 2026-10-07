@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react'
-import { Group, Member, proposeGroups, reconcile, slug } from './match'
-import { Canonical, IGNORE, LogEntry, Role, State, emptyState, linkKey } from './types'
+import { Group, Member, proposeGroups, reconcile } from './match'
+import { Canonical, IGNORE, LogEntry, Role, State, emptyState, fmtId, linkKey } from './types'
 import { importFile } from './workbook'
 
 const KEY = 'modelmaster.v1'
@@ -53,6 +53,12 @@ function link(s: State, members: Pick<Member, 'source' | 'raw'>[], target: strin
     log.push({ date: today(), source: m.source, raw: m.raw, decision, canonicalId: target === IGNORE ? '' : target })
   }
   return { ...s, links, log }
+}
+
+/** Mint a canonical model with the next immutable MM-###### id. */
+function create(s: State, draft: Group['draft']): { s: State; id: string } {
+  const id = fmtId(s.nextId)
+  return { s: { ...s, nextId: s.nextId + 1, canonicals: [...s.canonicals, { id, ...draft }] }, id }
 }
 
 export const actions = {
@@ -111,10 +117,9 @@ export const actions = {
     let s = state
     let id = group.existingId
     if (!id) {
-      const baseId = slug(`${draft.manufacturer}-${draft.model}`) || 'MODEL'
-      id = baseId
-      for (let n = 2; s.canonicals.some((c) => c.id === id); n++) id = `${baseId}-${n}`
-      s = { ...s, canonicals: [...s.canonicals, { id, ...draft }] }
+      const r = create(s, draft)
+      s = r.s
+      id = r.id
     }
     set(link(s, members, id, group.existingId ? 'linked' : 'created'))
   },
@@ -129,16 +134,14 @@ export const actions = {
 
   approveMany(groups: Group[]) {
     let s = state
-    const created: Canonical[] = []
     for (const g of groups) {
       let id = g.existingId
       if (!id) {
-        const baseId = slug(`${g.draft.manufacturer}-${g.draft.model}`) || 'MODEL'
-        id = baseId
-        for (let n = 2; s.canonicals.some((c) => c.id === id) || created.some((c) => c.id === id); n++) id = `${baseId}-${n}`
-        created.push({ id, ...g.draft })
+        const r = create(s, g.draft)
+        s = r.s
+        id = r.id
       }
-      s = link({ ...s, canonicals: [...s.canonicals, ...created.splice(0)] }, g.members, id, g.existingId ? 'auto-linked' : 'created')
+      s = link(s, g.members, id, g.existingId ? 'auto-linked' : 'created')
     }
     set(s)
   },
@@ -156,6 +159,35 @@ export const actions = {
   deleteCanonical(id: string) {
     const links = Object.fromEntries(Object.entries(state.links).filter(([, v]) => v !== id))
     set({ ...state, canonicals: state.canonicals.filter((c) => c.id !== id), links, deleted: [...state.deleted, id] })
+  },
+
+  /**
+   * Fold one canonical model into another. All its names move over, and the retired id is kept
+   * as a redirect so anything that stored it still resolves to the survivor.
+   */
+  mergeCanonicals(fromId: string, intoId: string) {
+    if (fromId === intoId) return
+    const links = Object.fromEntries(Object.entries(state.links).map(([k, v]) => [k, v === fromId ? intoId : v]))
+    const redirects = Object.fromEntries(Object.entries(state.redirects).map(([k, v]) => [k, v === fromId ? intoId : v]))
+    redirects[fromId] = intoId
+    set({
+      ...state,
+      links,
+      redirects,
+      canonicals: state.canonicals.filter((c) => c.id !== fromId),
+      deleted: [...state.deleted, fromId],
+      log: [...state.log, { date: today(), source: '', raw: '', decision: 'model-merged', canonicalId: `${fromId} → ${intoId}` }],
+    })
+  },
+
+  /** Move some names out of a model into a brand-new one (same details; edit generation/line afterwards). Returns the new id. */
+  splitAliases(fromId: string, names: { source: string; raw: string }[]): string | null {
+    const from = state.canonicals.find((c) => c.id === fromId)
+    if (!from || !names.length) return null
+    const { id: _old, ...draft } = from
+    const r = create(state, { ...draft, notes: draft.notes })
+    set(link(r.s, names, r.id, `split from ${fromId}`))
+    return r.id
   },
 
   removeSource(name: string) {

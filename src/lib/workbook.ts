@@ -1,7 +1,7 @@
 import * as XLSX from 'xlsx'
 import { parse } from './normalize'
 import { rowCtx } from './match'
-import { Canonical, IGNORE, LogEntry, Role, Row, Source, State, emptyState, linkKey } from './types'
+import { Canonical, IGNORE, LogEntry, Role, Row, Source, State, emptyState, idNumber, linkKey, modelLabel } from './types'
 
 const MASTER_SHEETS = ['Canonical_Models', 'Aliases']
 
@@ -103,6 +103,8 @@ function importMaster(wb: XLSX.WorkBook, state: State, fileName: string): Import
     id: str(r['Canonical ID']),
     manufacturer: str(r['Manufacturer']),
     model: str(r['Canonical Model']),
+    generation: str(r['Generation']),
+    line: str(r['Product Line']),
     family: str(r['Family']),
     deviceType: str(r['Device Type']),
     ppm: str(r['PPM']),
@@ -111,6 +113,15 @@ function importMaster(wb: XLSX.WorkBook, state: State, fileName: string): Import
     toner: str(r['Toner Family']),
     notes: str(r['Notes']),
   })).filter((c) => c.id)
+
+  for (const r of sheet<Record<string, string>>('Redirects')) next.redirects[str(r['Retired ID'])] = str(r['Now ID'])
+  next.nextId =
+    1 +
+    Math.max(
+      0,
+      ...next.canonicals.map((c) => idNumber(c.id)),
+      ...Object.keys(next.redirects).map(idNumber)
+    )
 
   for (const r of sheet<Record<string, string>>('Settings')) {
     if (r['Role'] === 'master') {
@@ -175,7 +186,7 @@ export function exportMaster(state: State): XLSX.WorkBook {
         Source: s.name,
         'Raw Model': row.raw,
         'Canonical ID': link === IGNORE ? 'IGNORE' : link ?? '',
-        'Canonical Model': link && byId.get(link) ? `${byId.get(link)!.manufacturer} ${byId.get(link)!.model}`.trim() : '',
+        'Canonical Model': link && byId.get(link) ? modelLabel(byId.get(link)!) : '',
         Variant: parse(row.raw, ctx).variant,
         Count: row.count,
       }
@@ -203,6 +214,8 @@ export function exportMaster(state: State): XLSX.WorkBook {
       'Canonical ID': c.id,
       Manufacturer: c.manufacturer,
       'Canonical Model': c.model,
+      Generation: c.generation,
+      'Product Line': c.line,
       Family: c.family,
       'Device Type': c.deviceType,
       PPM: c.ppm,
@@ -217,7 +230,7 @@ export function exportMaster(state: State): XLSX.WorkBook {
     return o
   })
 
-  const canonHeader = ['Canonical ID', 'Manufacturer', 'Canonical Model', 'Family', 'Device Type', 'PPM', 'Color', 'Paper Size', 'Toner Family', 'Notes', 'Alias Count', 'Sources', ...linkedCols]
+  const canonHeader = ['Canonical ID', 'Manufacturer', 'Canonical Model', 'Generation', 'Product Line', 'Family', 'Device Type', 'PPM', 'Color', 'Paper Size', 'Toner Family', 'Notes', 'Alias Count', 'Sources', ...linkedCols]
   const aliasHeader = ['Source', 'Raw Model', 'Canonical ID', 'Canonical Model', 'Variant', 'Count', ...aliasCols]
   const add = (name: string, rows: object[], header: string[]) => {
     const ws = XLSX.utils.json_to_sheet(rows, { header })
@@ -227,6 +240,11 @@ export function exportMaster(state: State): XLSX.WorkBook {
   }
   add('Canonical_Models', canonRows, canonHeader)
   add('Aliases', aliasRows, aliasHeader)
+  add(
+    'Redirects',
+    Object.entries(state.redirects).map(([k, v]) => ({ 'Retired ID': k, 'Now ID': v })),
+    ['Retired ID', 'Now ID']
+  )
   add(
     'Review_Log',
     state.log.map((l: LogEntry) => ({ Date: l.date, Source: l.source, 'Raw Model': l.raw, Decision: l.decision, 'Canonical ID': l.canonicalId })),

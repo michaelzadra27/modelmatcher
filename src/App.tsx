@@ -3,7 +3,9 @@ import * as XLSX from 'xlsx'
 import { Group, Member, proposeGroups, reconcile, similar } from './lib/match'
 import ReconcileTab from './Reconcile'
 import { actions, useModelState } from './lib/store'
-import { CANON_FIELDS, Canonical, IGNORE, ROLE_LABEL, Role, State, linkKey } from './lib/types'
+import { CANON_FIELDS, Canonical, IGNORE, ROLE_LABEL, Role, State, linkKey, modelLabel } from './lib/types'
+import { parse } from './lib/normalize'
+import { rowCtx } from './lib/match'
 import { exportMaster } from './lib/workbook'
 import { cloudConfigured, pull, push, supabase } from './lib/cloud'
 
@@ -229,7 +231,7 @@ function ReviewTab({ state, groups }: { state: State; groups: Group[] }) {
         <div className="list">
           {shown.slice(0, limit).map((g) => (
             <div key={g.id} className={'item' + (current?.id === g.id ? ' on' : '')} onClick={() => setSel(g.id)}>
-              <b>{g.existingId ? state.canonicals.find((c) => c.id === g.existingId)?.model : g.base}</b>{' '}
+              <b>{g.existingId ? modelLabel(state.canonicals.find((c) => c.id === g.existingId) ?? g.draft) : modelLabel(g.draft)}</b>{' '}
               <small>{g.mfr || '?'}</small>
               {g.existingId && <span className="tag ok">existing</span>}
               {g.attention.length > 0 && <span className="tag warn">check</span>}
@@ -268,7 +270,7 @@ function GroupDetail({ group, groups, state }: { group: Group; groups: Group[]; 
       {existing ? (
         <div className="row">
           <span className="tag ok">Matches existing model</span>
-          <b>{existing.manufacturer} {existing.model}</b>
+          <b>{modelLabel(existing)}</b> <span className="mute">{existing.id}</span>
           <span className="mute">({group.matchedBy === 'alias' ? 'known alias text' : 'same model number'})</span>
         </div>
       ) : (
@@ -331,7 +333,7 @@ function GroupDetail({ group, groups, state }: { group: Group; groups: Group[]; 
             <option key={n.canonicalId} value={n.canonicalId}>★ {n.label} ({Math.round(n.score * 100)}%)</option>
           ))}
           {state.canonicals.map((c) => (
-            <option key={c.id} value={c.id}>{c.manufacturer} {c.model}</option>
+            <option key={c.id} value={c.id}>{modelLabel(c)} · {c.id}</option>
           ))}
         </select>
         <button className="btn" disabled={!target || !chosen.length} onClick={() => mergeInto(target)}>Link</button>
@@ -366,7 +368,7 @@ function MasterTab({ state }: { state: State }) {
   }, [state.sources, state.links])
 
   const ql = q.trim().toLowerCase()
-  const rows = state.canonicals.filter((c) => !ql || `${c.manufacturer} ${c.model} ${c.family} ${c.deviceType}`.toLowerCase().includes(ql))
+  const rows = state.canonicals.filter((c) => !ql || `${c.id} ${modelLabel(c)} ${c.line} ${c.family} ${c.deviceType}`.toLowerCase().includes(ql))
   const editing = state.canonicals.find((c) => c.id === editId)
 
   if (!state.canonicals.length) return <div className="card">No canonical models yet. Approve groups in Review.</div>
@@ -381,12 +383,12 @@ function MasterTab({ state }: { state: State }) {
         <div className="list" style={{ maxHeight: 'calc(100vh - 160px)' }}>
           <table>
             <thead>
-              <tr><th>Manufacturer</th><th>Model</th><th>Type</th><th>PPM</th><th>Aliases</th><th>Sources</th></tr>
+              <tr><th>ID</th><th>Manufacturer</th><th>Model</th><th>Line</th><th>Type</th><th>Aliases</th><th>Sources</th></tr>
             </thead>
             <tbody>
               {rows.slice(0, 500).map((c) => (
                 <tr key={c.id} className="click" onClick={() => setEditId(c.id)}>
-                  <td>{c.manufacturer}</td><td>{c.model}</td><td>{c.deviceType}</td><td>{c.ppm}</td>
+                  <td className="mute">{c.id}</td><td>{c.manufacturer}</td><td>{[c.model, c.generation].filter(Boolean).join(' ')}</td><td>{c.line}</td><td>{c.deviceType}</td>
                   <td>{stats.get(c.id)?.n ?? 0}</td><td>{stats.get(c.id)?.sources.size ?? 0}</td>
                 </tr>
               ))}
@@ -400,40 +402,107 @@ function MasterTab({ state }: { state: State }) {
 }
 
 function CanonicalEditor({ c, state, close }: { c: Canonical; state: State; close: () => void }) {
-  const aliases: Member[] = []
+  const [picked, setPicked] = useState<Set<string>>(new Set())
+  const [mergeTo, setMergeTo] = useState('')
+  const aliases: (Member & { key: string })[] = []
   for (const s of Object.values(state.sources))
     for (const r of s.rows)
-      if (state.links[linkKey(s.name, r.raw)] === c.id)
-        aliases.push({ source: s.name, raw: r.raw, count: r.count, variant: '', attrs: r.attrs, columns: s.columns, ctx: { mfr: '', desc: '', family: '', deviceType: '' } })
+      if (state.links[linkKey(s.name, r.raw)] === c.id) {
+        const ctx = rowCtx(s, r)
+        aliases.push({
+          key: linkKey(s.name, r.raw),
+          source: s.name,
+          raw: r.raw,
+          count: r.count,
+          variant: parse(r.raw, { mfr: ctx.mfr, desc: ctx.desc }).variant,
+          attrs: r.attrs,
+          columns: s.columns,
+          ctx,
+        })
+      }
+  const variants = new Map<string, number>()
+  aliases.forEach((a) => variants.set(a.variant || '(none)', (variants.get(a.variant || '(none)') ?? 0) + 1))
+  const others = state.canonicals.filter((x) => x.id !== c.id && x.manufacturer === c.manufacturer)
+  const retired = Object.entries(state.redirects).filter(([, to]) => to === c.id).map(([from]) => from)
 
   return (
     <div className="card">
       <div className="row">
-        <b>{c.id}</b>
+        <b>{modelLabel(c)}</b>
+        <span className="tag">{c.id}</span>
         <div className="spacer" />
         <button className="btn" onClick={close}>Close</button>
       </div>
+      {retired.length > 0 && <div className="mute" style={{ marginBottom: 10 }}>Also answers to retired ids: {retired.join(', ')}</div>}
       <div className="fields">
         {CANON_FIELDS.map((f) => (
           <div key={f.key}>
             <label>{f.label}</label>
-            <input value={c[f.key]} onChange={(e) => actions.updateCanonical(c.id, { [f.key]: e.target.value })} />
+            <input value={c[f.key] ?? ''} onChange={(e) => actions.updateCanonical(c.id, { [f.key]: e.target.value })} />
           </div>
         ))}
       </div>
+
+      <h2 style={{ fontSize: 12, color: 'var(--mute)', textTransform: 'uppercase' }}>Variants</h2>
+      <div className="row">
+        {[...variants.entries()].map(([v, n]) => (
+          <span key={v} className="tag">{v} · {n}</span>
+        ))}
+      </div>
+
       <h2 style={{ fontSize: 12, color: 'var(--mute)', textTransform: 'uppercase' }}>Aliases ({aliases.length})</h2>
       <table>
         <tbody>
           {aliases.map((a) => (
-            <tr key={linkKey(a.source, a.raw)}>
+            <tr key={a.key}>
+              <td style={{ width: 24 }}>
+                <input
+                  type="checkbox"
+                  checked={picked.has(a.key)}
+                  onChange={(e) => {
+                    const n = new Set(picked)
+                    e.target.checked ? n.add(a.key) : n.delete(a.key)
+                    setPicked(n)
+                  }}
+                />
+              </td>
               <td>{a.raw}</td>
+              <td className="mute">{a.variant}</td>
               <td className="mute">{a.source}</td>
               <td><button className="btn" onClick={() => actions.unlink(a.source, a.raw)}>Unlink</button></td>
             </tr>
           ))}
         </tbody>
       </table>
+
       <div className="row" style={{ marginTop: 12 }}>
+        <button
+          className="btn"
+          disabled={!picked.size}
+          title="Moves the ticked names into a new model with its own id (e.g. when a generation was lumped in)"
+          onClick={() => {
+            actions.splitAliases(c.id, aliases.filter((a) => picked.has(a.key)))
+            setPicked(new Set())
+          }}
+        >
+          Split {picked.size || ''} ticked into a new model
+        </button>
+      </div>
+      <div className="row">
+        <select style={{ width: 260 }} value={mergeTo} onChange={(e) => setMergeTo(e.target.value)}>
+          <option value="">Merge this model into…</option>
+          {others.map((x) => (
+            <option key={x.id} value={x.id}>{modelLabel(x)} {x.line && `(${x.line})`} · {x.id}</option>
+          ))}
+        </select>
+        <button
+          className="btn"
+          disabled={!mergeTo}
+          onClick={() => confirm(`Merge ${c.id} into ${mergeTo}? ${c.id} keeps resolving to ${mergeTo}.`) && (actions.mergeCanonicals(c.id, mergeTo), close())}
+        >
+          Merge
+        </button>
+        <div className="spacer" />
         <button
           className="btn danger"
           onClick={() => confirm(`Delete ${c.id}? Its aliases go back to the review queue.`) && (actions.deleteCanonical(c.id), close())}

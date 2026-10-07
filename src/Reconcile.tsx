@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Bucket, ReconRow } from './lib/match'
 import { actions } from './lib/store'
-import { State, linkKey } from './lib/types'
+import { State, linkKey, modelLabel } from './lib/types'
 
 const LABEL: Record<Bucket, string> = {
   resolved: 'Already matched',
@@ -43,7 +43,7 @@ export default function ReconcileTab({ state, rows, goReview }: { state: State; 
   const setRow = (r: ReconRow, patch: Edit) => setEdits((e) => ({ ...e, [key(r)]: { ...e[key(r)], ...patch } }))
   const modelName = (id: string) => {
     const c = state.canonicals.find((x) => x.id === id)
-    return c ? `${c.manufacturer} ${c.model}`.trim() : id
+    return c ? modelLabel(c) : id
   }
 
   if (!rows.length)
@@ -119,7 +119,7 @@ export default function ReconcileTab({ state, rows, goReview }: { state: State; 
                       <option value="">— not in master —</option>
                       {r.candidates.map((c) => (
                         <option key={c.id} value={c.id}>
-                          {c.label}
+                          {c.label} · {c.id}{c.note ? ` (${c.note})` : ''}
                         </option>
                       ))}
                       {chosen && !r.candidates.some((c) => c.id === chosen) && <option value={chosen}>{modelName(chosen)}</option>}
@@ -129,12 +129,12 @@ export default function ReconcileTab({ state, rows, goReview }: { state: State; 
                         .slice(0, 400)
                         .map((c) => (
                           <option key={c.id} value={c.id}>
-                            {c.manufacturer} {c.model}
+                            {modelLabel(c)} · {c.id}
                           </option>
                         ))}
                     </select>
                   </td>
-                  <td>{top && <span className={'tag ' + (top.score >= 0.9 ? 'ok' : 'warn')}>{top.kind} {Math.round(top.score * 100)}%</span>}</td>
+                  <td>{top && <span className={'tag ' + (top.score >= 0.9 ? 'ok' : 'warn')}>{top.kind} {Math.round(top.score * 100)}%{top.note ? ` · ${top.note}` : ''}</span>}</td>
                   <td style={{ textAlign: 'center' }}>
                     <input type="checkbox" checked={confirmedOf(r)} disabled={!chosen} onChange={(e) => setRow(r, { confirmed: e.target.checked })} />
                   </td>
