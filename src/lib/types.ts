@@ -1,8 +1,10 @@
 // Column A of every source sheet is the model name. Other columns get a role.
-export type Role = 'linked' | 'manufacturer' | 'family' | 'deviceType' | 'description' | 'ignore'
+export type Role = 'linked' | 'manufacturer' | 'family' | 'deviceType' | 'description' | 'supply' | 'price' | 'ignore'
 
 export const ROLE_LABEL: Record<Role, string> = {
   linked: 'Linked data',
+  supply: 'Toner / supply SKU',
+  price: 'Price',
   manufacturer: 'Manufacturer',
   family: 'Model family',
   deviceType: 'Device type',
@@ -63,7 +65,8 @@ export interface State {
   canonicals: Canonical[]
   links: Record<string, string> // linkKey(source, raw) → canonical id | IGNORE
   log: LogEntry[]
+  deleted: string[] // canonical ids removed locally, still to be deleted in the cloud
 }
 
-export const emptyState = (): State => ({ sources: {}, canonicals: [], links: {}, log: [] })
+export const emptyState = (): State => ({ sources: {}, canonicals: [], links: {}, log: [], deleted: [] })
 export const linkKey = (source: string, raw: string) => `${source}\u0001${raw}`

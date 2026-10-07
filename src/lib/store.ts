@@ -123,7 +123,7 @@ export const actions = {
 
   deleteCanonical(id: string) {
     const links = Object.fromEntries(Object.entries(state.links).filter(([, v]) => v !== id))
-    set({ ...state, canonicals: state.canonicals.filter((c) => c.id !== id), links })
+    set({ ...state, canonicals: state.canonicals.filter((c) => c.id !== id), links, deleted: [...state.deleted, id] })
   },
 
   removeSource(name: string) {
@@ -131,6 +131,11 @@ export const actions = {
     delete sources[name]
     const links = Object.fromEntries(Object.entries(state.links).filter(([k]) => !k.startsWith(name + '\u0001')))
     set({ ...state, sources, links })
+  },
+
+  /** Replace everything with state pulled from the cloud. */
+  replace(next: State) {
+    set(next)
   },
 
   reset() {

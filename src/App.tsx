@@ -1,11 +1,12 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import * as XLSX from 'xlsx'
 import { Group, Member, proposeGroups, similar } from './lib/match'
 import { actions, useModelState } from './lib/store'
 import { CANON_FIELDS, Canonical, IGNORE, ROLE_LABEL, Role, State, linkKey } from './lib/types'
 import { exportMaster } from './lib/workbook'
+import { cloudConfigured, pull, push, supabase } from './lib/cloud'
 
-type Tab = 'import' | 'review' | 'master'
+type Tab = 'import' | 'review' | 'master' | 'cloud'
 
 export default function App() {
   const state = useModelState()
@@ -21,9 +22,9 @@ export default function App() {
       <header>
         <h1>Model Master</h1>
         <nav>
-          {(['import', 'review', 'master'] as Tab[]).map((t) => (
+          {(['import', 'review', 'master', 'cloud'] as Tab[]).map((t) => (
             <button key={t} className={tab === t ? 'on' : ''} onClick={() => setTab(t)}>
-              {t === 'import' ? 'Import' : t === 'review' ? `Review (${groups.length})` : `Master (${state.canonicals.length})`}
+              {t === 'import' ? 'Import' : t === 'cloud' ? 'Cloud' : t === 'review' ? `Review (${groups.length})` : `Master (${state.canonicals.length})`}
             </button>
           ))}
         </nav>
@@ -36,6 +37,7 @@ export default function App() {
         {tab === 'import' && <ImportTab state={state} groups={groups} go={setTab} />}
         {tab === 'review' && <ReviewTab state={state} groups={groups} />}
         {tab === 'master' && <MasterTab state={state} />}
+        {tab === 'cloud' && <CloudTab state={state} />}
       </main>
     </>
   )
@@ -422,6 +424,105 @@ function CanonicalEditor({ c, state, close }: { c: Canonical; state: State; clos
           Delete model
         </button>
       </div>
+    </div>
+  )
+}
+
+/* ───────────────────────── Cloud (Supabase) ───────────────────────── */
+
+function CloudTab({ state }: { state: State }) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [user, setUser] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+  const [err, setErr] = useState('')
+
+  useEffect(() => {
+    if (!supabase) return
+    supabase.auth.getSession().then(({ data }) => setUser(data.session?.user.email ?? null))
+    const { data } = supabase.auth.onAuthStateChange((_e, s) => setUser(s?.user.email ?? null))
+    return () => data.subscription.unsubscribe()
+  }, [])
+
+  if (!cloudConfigured || !supabase)
+    return (
+      <div className="card">
+        <h2>Connect Supabase</h2>
+        <ol>
+          <li>Create a Supabase project and run <code>supabase/migrations/0001_init.sql</code> in the SQL editor.</li>
+          <li>Authentication → Users → add a user (email + password) for yourself.</li>
+          <li>Copy <code>.env.example</code> to <code>.env.local</code> and fill in the project URL and <b>anon</b> key (Project Settings → API), then restart the dev server.</li>
+        </ol>
+      </div>
+    )
+
+  const run = async (fn: () => Promise<string>) => {
+    setBusy(true)
+    setErr('')
+    try {
+      setMsg(await fn())
+    } catch (e) {
+      setErr((e as Error).message)
+    }
+    setBusy(false)
+  }
+
+  if (!user)
+    return (
+      <div className="card" style={{ maxWidth: 420 }}>
+        <h2>Sign in</h2>
+        <div className="fields" style={{ gridTemplateColumns: '1fr' }}>
+          <input placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} />
+        </div>
+        <button
+          className="btn primary"
+          disabled={busy}
+          onClick={() =>
+            run(async () => {
+              const { error } = await supabase!.auth.signInWithPassword({ email, password })
+              if (error) throw error
+              return 'Signed in'
+            })
+          }
+        >
+          Sign in
+        </button>
+        {err && <div className="warnbox" style={{ marginTop: 12 }}>{err}</div>}
+      </div>
+    )
+
+  return (
+    <div className="card">
+      <div className="row">
+        <span>Signed in as <b>{user}</b></span>
+        <div className="spacer" />
+        <button className="btn" onClick={() => supabase!.auth.signOut()}>Sign out</button>
+      </div>
+      <p className="mute">
+        Local: {state.canonicals.length.toLocaleString()} models, {Object.values(state.sources).reduce((n, s) => n + s.rows.length, 0).toLocaleString()} names.
+        Push saves everything (safe to repeat). Pull replaces your local working state with what is in the cloud.
+      </p>
+      <div className="row">
+        <button className="btn primary" disabled={busy} onClick={() => run(() => push(state, setMsg))}>Push to cloud</button>
+        <button
+          className="btn"
+          disabled={busy}
+          onClick={() =>
+            confirm('Replace local data with the cloud copy? Unpushed local work is lost.') &&
+            run(async () => {
+              const next = await pull(setMsg)
+              actions.replace(next)
+              return `Pulled ${next.canonicals.length} models and ${Object.values(next.sources).reduce((n, s) => n + s.rows.length, 0).toLocaleString()} names.`
+            })
+          }
+        >
+          Pull from cloud
+        </button>
+      </div>
+      {msg && <div className="toast">{msg}</div>}
+      {err && <div className="warnbox">{err}</div>}
     </div>
   )
 }

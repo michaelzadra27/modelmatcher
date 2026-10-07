@@ -11,6 +11,8 @@ function guessRole(header: string): Role {
   if (/famil|series/.test(h)) return 'family'
   if (/device.?type|^type$|categor|class/.test(h)) return 'deviceType'
   if (/desc/.test(h)) return 'description'
+  if (/toner|supply|supplies|cartridge|sku|part.?n|item.?(no|num|#)/.test(h)) return 'supply'
+  if (/price|msrp|cost|dealer|srp|list/.test(h)) return 'price'
   return 'linked'
 }
 
@@ -170,7 +172,7 @@ export function exportMaster(state: State): XLSX.WorkBook {
         a.n++
         a.sources.add(s.name)
         for (const c of s.columns) {
-          if (s.roles[c] !== 'linked' || !row.attrs[c]) continue
+          if ((s.roles[c] !== 'linked' && s.roles[c] !== 'supply') || !row.attrs[c]) continue
           const set = a.linked.get(c) ?? new Set()
           row.attrs[c].split('; ').forEach((v) => set.add(v))
           a.linked.set(c, set)
