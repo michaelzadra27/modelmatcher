@@ -177,6 +177,9 @@ function parseName(
     base = m[1]
     variant = m[2]
   }
+  // Canon iPF / Ricoh "PRO-NNNN" lines carry PRO in the model name itself ("PRO-6000S" → PRO-6000 / S),
+  // unlike "LaserJet Pro M428" where Pro is just a tier word (the number there is letter-prefixed, M428).
+  if (/^\d/.test(base) && idxNum > 0 && tokens[idxNum - 1] === 'PRO') base = 'PRO-' + base
   // A short letters-only token right after the core ("M428 FDW") is part of the variant.
   const next = tokens[idxNum + 1]
   if (next && !hasDigit(next) && next.length <= 4 && !NOISE.has(next)) rest = next
