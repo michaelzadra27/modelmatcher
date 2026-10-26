@@ -251,96 +251,136 @@ function ReviewTab({ state, groups }: { state: State; groups: Group[] }) {
   )
 }
 
+const IDENTITY_FIELDS = CANON_FIELDS.filter((f) => ['manufacturer', 'model', 'generation', 'line'].includes(f.key))
+const SPEC_FIELDS = CANON_FIELDS.filter((f) => !['manufacturer', 'model', 'generation', 'line'].includes(f.key))
+
 function GroupDetail({ group, groups, state }: { group: Group; groups: Group[]; state: State }) {
   const [draft, setDraft] = useState(group.draft)
   const [picked, setPicked] = useState(() => new Set(group.members.map((m) => linkKey(m.source, m.raw))))
+  const [showSpecs, setShowSpecs] = useState(false)
   const [target, setTarget] = useState('')
   const existing = group.existingId ? state.canonicals.find((c) => c.id === group.existingId) : null
   const chosen = group.members.filter((m) => picked.has(linkKey(m.source, m.raw)))
-  const near = useMemo(() => similar(group, groups, state.canonicals), [group, groups, state.canonicals])
+  const allPicked = chosen.length === group.members.length
+  const near = useMemo(() => similar(group, groups, state.canonicals).filter((n) => n.canonicalId), [group, groups, state.canonicals])
   const linkedCols = [...new Set(group.members.flatMap((m) => m.columns.filter((c) => state.sources[m.source].roles[c] === 'linked')))]
 
-  const mergeInto = (canonicalId: string) => {
-    actions.linkTo(chosen, canonicalId)
-  }
+  const field = (f: (typeof CANON_FIELDS)[number]) => (
+    <div key={f.key}>
+      <label>{f.label}</label>
+      <input value={draft[f.key as keyof typeof draft]} onChange={(e) => setDraft({ ...draft, [f.key]: e.target.value })} />
+    </div>
+  )
 
   return (
     <div className="card">
-      {group.attention.map((a) => <div className="warnbox" key={a}>{a}</div>)}
+      {/* Header: what this group is and what will happen */}
       {existing ? (
-        <div className="row">
-          <span className="tag ok">Matches existing model</span>
-          <b>{modelLabel(existing)}</b> <span className="mute">{existing.id}</span>
-          <span className="mute">({group.matchedBy === 'alias' ? 'known alias text' : 'same model number'})</span>
+        <div className="detailhead">
+          <div>
+            <div className="heading">{modelLabel(existing)}</div>
+            <div className="mute">
+              Matches an existing model · {existing.id} · {group.matchedBy === 'alias' ? 'name already linked before' : 'same model number'}
+            </div>
+          </div>
+          <span className="tag ok">existing</span>
         </div>
       ) : (
-        <div className="fields">
-          {CANON_FIELDS.map((f) => (
-            <div key={f.key}>
-              <label>{f.label}</label>
-              <input value={draft[f.key as keyof typeof draft]} onChange={(e) => setDraft({ ...draft, [f.key]: e.target.value })} />
+        <div className="detailhead">
+          <div>
+            <div className="heading">{modelLabel(draft) || 'New model'}</div>
+            <div className="mute">
+              {group.members.length} name{group.members.length === 1 ? '' : 's'} from {group.sources.join(', ')} — looks like one new model. Confirm the details, then create it.
             </div>
-          ))}
+          </div>
+          <span className="tag">gets a new MM- key</span>
         </div>
       )}
 
-      <table style={{ marginBottom: 12 }}>
+      {group.attention.map((a) => <div className="warnbox" key={a}>{a}</div>)}
+
+      {/* Identity: the fields that define the key */}
+      {!existing && (
+        <>
+          <div className="fields four">{IDENTITY_FIELDS.map(field)}</div>
+          <button className="linklike" onClick={() => setShowSpecs((s) => !s)}>
+            {showSpecs ? '▾ Hide specs' : '▸ Add specs (type, PPM, toner…)'}
+          </button>
+          {showSpecs && <div className="fields" style={{ marginTop: 8 }}>{SPEC_FIELDS.map(field)}</div>}
+        </>
+      )}
+
+      {/* Which names belong */}
+      <div className="row" style={{ margin: '14px 0 4px' }}>
+        <b>Names in this model</b>
+        <span className="mute">{chosen.length} of {group.members.length} selected</span>
+        <div className="spacer" />
+        <button
+          className="linklike"
+          onClick={() => setPicked(allPicked ? new Set() : new Set(group.members.map((m) => linkKey(m.source, m.raw))))}
+        >
+          {allPicked ? 'Clear all' : 'Select all'}
+        </button>
+      </div>
+      <table style={{ marginBottom: 14 }}>
         <thead>
           <tr>
-            <th></th><th>Source</th><th>Name</th><th>Variant</th><th>Rows</th>
+            <th></th><th>Name</th><th>Variant</th><th>Source</th><th>Rows</th>
             {linkedCols.map((c) => <th key={c}>{c}</th>)}
           </tr>
         </thead>
         <tbody>
           {group.members.map((m) => {
             const k = linkKey(m.source, m.raw)
+            const on = picked.has(k)
             return (
-              <tr key={k}>
-                <td>
-                  <input
-                    type="checkbox"
-                    checked={picked.has(k)}
-                    onChange={(e) => {
-                      const n = new Set(picked)
-                      e.target.checked ? n.add(k) : n.delete(k)
-                      setPicked(n)
-                    }}
-                  />
-                </td>
-                <td>{m.source}</td>
-                <td>{m.raw}</td>
-                <td>{m.variant}</td>
-                <td>{m.count}</td>
-                {linkedCols.map((c) => <td key={c}>{m.attrs[c] ?? ''}</td>)}
+              <tr key={k} className="click" style={{ opacity: on ? 1 : 0.5 }} onClick={() => {
+                const n = new Set(picked)
+                on ? n.delete(k) : n.add(k)
+                setPicked(n)
+              }}>
+                <td><input type="checkbox" checked={on} readOnly /></td>
+                <td><b>{m.raw}</b></td>
+                <td className="mute">{m.variant || '—'}</td>
+                <td className="mute">{m.source}</td>
+                <td className="mute">{m.count}</td>
+                {linkedCols.map((c) => <td key={c} className="mute">{m.attrs[c] ?? ''}</td>)}
               </tr>
             )
           })}
         </tbody>
       </table>
 
+      {/* Primary action */}
       <div className="row">
         <button className="btn primary" disabled={!chosen.length || (!existing && !draft.model.trim())} onClick={() => actions.approve(group, draft, chosen)}>
-          {existing ? `Link ${chosen.length} to ${existing.model}` : `Create model + link ${chosen.length}`}
+          {existing ? `Link ${chosen.length} name${chosen.length === 1 ? '' : 's'} to ${existing.model}` : `Create model + link ${chosen.length} name${chosen.length === 1 ? '' : 's'}`}
         </button>
-        <button className="btn" disabled={!chosen.length} onClick={() => actions.ignore(chosen)}>Ignore (not a device)</button>
+        <button className="btn" disabled={!chosen.length} onClick={() => actions.ignore(chosen)}>Not a device — ignore</button>
       </div>
 
-      <div className="row">
-        <span className="mute">Not the same model? Link selected names to:</span>
-        <select style={{ width: 260 }} value={target} onChange={(e) => setTarget(e.target.value)}>
-          <option value="">Choose existing model…</option>
-          {near.filter((n) => n.canonicalId).map((n) => (
-            <option key={n.canonicalId} value={n.canonicalId}>★ {n.label} ({Math.round(n.score * 100)}%)</option>
-          ))}
-          {state.canonicals.map((c) => (
-            <option key={c.id} value={c.id}>{modelLabel(c)} · {c.id}</option>
-          ))}
-        </select>
-        <button className="btn" disabled={!target || !chosen.length} onClick={() => mergeInto(target)}>Link</button>
-      </div>
-      {near.some((n) => n.groupId) && (
-        <div className="mute">
-          Similar pending groups: {near.filter((n) => n.groupId).map((n) => n.label).join(' · ')}
+      {/* Already exists? Link to another model instead */}
+      {!existing && (
+        <div className="altbox">
+          <div className="mute" style={{ marginBottom: 6 }}>Actually an existing model? Link the selected names instead of creating a new one:</div>
+          {near.length > 0 && (
+            <div className="row" style={{ marginBottom: 6 }}>
+              {near.map((n) => (
+                <button key={n.canonicalId} className="btn" disabled={!chosen.length} onClick={() => actions.linkTo(chosen, n.canonicalId!)}>
+                  {n.label} <span className="mute">{Math.round(n.score * 100)}%</span>
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="row">
+            <select style={{ width: 300 }} value={target} onChange={(e) => setTarget(e.target.value)}>
+              <option value="">Pick any existing model…</option>
+              {state.canonicals.map((c) => (
+                <option key={c.id} value={c.id}>{modelLabel(c)} · {c.id}</option>
+              ))}
+            </select>
+            <button className="btn" disabled={!target || !chosen.length} onClick={() => actions.linkTo(chosen, target)}>Link</button>
+          </div>
         </div>
       )}
     </div>

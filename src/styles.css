@@ -42,3 +42,8 @@ input[type=checkbox] { width:auto }
 .toast { white-space:pre-line; background:var(--panel); border:1px solid var(--ok); color:var(--ok); border-radius:6px; padding:8px 12px; margin-bottom:12px }
 .bar { position:fixed; left:0; right:0; bottom:0; background:var(--panel); border-top:1px solid var(--line); padding:10px 20px; display:flex; align-items:center; gap:12px }
 .tag.bad { color:var(--bad); border-color:var(--bad) }
+.detailhead { display:flex; align-items:flex-start; gap:12px; margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid var(--line) }
+.detailhead .heading { font-size:18px; font-weight:700 }
+.fields.four { grid-template-columns:repeat(4,1fr) }
+.linklike { background:none; border:0; color:var(--accent); cursor:pointer; font:inherit; padding:2px 0 }
+.altbox { margin-top:14px; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--bg) }
