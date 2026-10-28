@@ -1,10 +1,30 @@
 // Column A of every source sheet is the model name. Other columns get a role.
-export type Role = 'linked' | 'manufacturer' | 'family' | 'deviceType' | 'description' | 'supply' | 'price' | 'ignore'
+export type Role =
+  | 'linked'
+  | 'manufacturer'
+  | 'family'
+  | 'deviceType'
+  | 'description'
+  | 'supply'
+  | 'price'
+  | 'tonerBlackSku'
+  | 'tonerBlackCost'
+  | 'tonerBlackYield'
+  | 'tonerColorSku'
+  | 'tonerColorCost'
+  | 'tonerColorYield'
+  | 'ignore'
 
 export const ROLE_LABEL: Record<Role, string> = {
   linked: 'Linked data',
-  supply: 'Toner / supply SKU',
-  price: 'Price',
+  tonerBlackSku: 'Black toner — SKU',
+  tonerBlackCost: 'Black toner — cost',
+  tonerBlackYield: 'Black toner — yield',
+  tonerColorSku: 'Color toner — SKU(s)',
+  tonerColorCost: 'Color toner — cost',
+  tonerColorYield: 'Color toner — yield',
+  supply: 'Other supply SKU',
+  price: 'Device price',
   manufacturer: 'Manufacturer',
   family: 'Model family',
   deviceType: 'Device type',

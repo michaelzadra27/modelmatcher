@@ -1,6 +1,7 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import { parse } from './normalize'
 import { rowCtx } from './match'
+import { extractToners, sourceHasToners } from './toner'
 import { Canonical, IGNORE, Role, Row, State, emptyState, idNumber, linkKey } from './types'
 
 const url = import.meta.env.VITE_SUPABASE_URL as string | undefined
@@ -27,7 +28,6 @@ const toPrice = (s: string) => {
   const n = parseFloat(s.replace(/[^\d.\-]/g, ''))
   return Number.isFinite(n) ? n : null
 }
-const splitList = (s: string) => s.split(/[;,\n]+/).map((x) => x.trim()).filter(Boolean)
 
 /** Push the working state to Supabase. Idempotent: natural keys + upserts, so re-pushing is safe. */
 export async function push(state: State, say: Progress): Promise<string> {
@@ -134,36 +134,35 @@ export async function push(state: State, say: Progress): Promise<string> {
     say(`Aliases ${done.toLocaleString()} / ${aliasOut.length.toLocaleString()}…`)
   }
 
-  // Supplies: every SKU found in a "supply" column of a linked alias, tied to that alias's model.
-  say('Supplies…')
-  const skuSet = new Set<string>()
-  const msPairs = new Map<string, { model_id: string; sku: string; source_id: string }>()
+  // Toners / supplies: structured records (sku, colour, cost, yield) from a linked row's
+  // tagged toner columns, tied to that row's model. One toner is deduped across models.
+  say('Toners…')
+  const supplyRows = new Map<string, { sku: string; color: string; supply_type: string; yield_pages: number | null; cost: number | null; description: string }>()
+  const msPairs = new Map<string, { model_id: string; sku: string; source_id: string; cost: number | null; yield_pages: number | null }>()
+  let tonerCount = 0
   for (const s of Object.values(state.sources)) {
-    const supplyCols = s.columns.filter((c) => s.roles[c] === 'supply')
-    if (!supplyCols.length) continue
+    if (!sourceHasToners(s)) continue
     for (const r of s.rows) {
       const link = state.links[linkKey(s.name, r.raw)]
       const mid = link && link !== IGNORE ? modelId.get(link) : undefined
       if (!mid) continue
-      for (const c of supplyCols)
-        for (const sku of splitList(r.attrs[c] ?? '')) {
-          skuSet.add(sku)
-          msPairs.set(`${mid}|${sku}`, { model_id: mid, sku, source_id: sourceId.get(s.name)! })
-        }
+      for (const t of extractToners(s, r)) {
+        if (!supplyRows.has(t.sku))
+          supplyRows.set(t.sku, { sku: t.sku, color: t.color || 'unknown', supply_type: t.type, yield_pages: t.yieldPages, cost: t.cost, description: t.raw })
+        msPairs.set(`${mid}|${t.sku}`, { model_id: mid, sku: t.sku, source_id: sourceId.get(s.name)!, cost: t.cost, yield_pages: t.yieldPages })
+        tonerCount++
+      }
     }
   }
+  const skuSet = [...supplyRows.keys()]
   const supplyId = new Map<string, string>()
-  for (const part of chunks([...skuSet], 500)) {
-    const rows = await must(sb.from('supplies').upsert(part.map((sku) => ({ sku })), { onConflict: 'sku', ignoreDuplicates: true }).select('id,sku'), 'supplies')
+  for (const part of chunks([...supplyRows.values()], 500)) {
+    const rows = await must(sb.from('supplies').upsert(part, { onConflict: 'sku' }).select('id,sku'), 'supplies')
     rows.forEach((r: any) => supplyId.set(r.sku, r.id))
   }
-  // ignoreDuplicates returns only new rows; fetch ids for the SKUs that already existed.
-  const missing = [...skuSet].filter((k) => !supplyId.has(k))
-  for (const part of chunks(missing, 200)) {
-    const rows = await must(sb.from('supplies').select('id,sku').in('sku', part), 'supplies lookup')
-    rows.forEach((r: any) => supplyId.set(r.sku, r.id))
-  }
-  const msRows = [...msPairs.values()].map((p) => ({ model_id: p.model_id, supply_id: supplyId.get(p.sku)!, source_id: p.source_id })).filter((r) => r.supply_id)
+  const msRows = [...msPairs.values()]
+    .map((p) => ({ model_id: p.model_id, supply_id: supplyId.get(p.sku)!, source_id: p.source_id, cost: p.cost, yield_pages: p.yield_pages }))
+    .filter((r) => r.supply_id)
   for (const part of chunks(msRows, 500)) await must(sb.from('model_supplies').upsert(part, { onConflict: 'model_id,supply_id' }), 'model_supplies')
 
   // Price book: one entry per alias × price column, priced as written in the source.
@@ -199,7 +198,7 @@ export async function push(state: State, say: Progress): Promise<string> {
       await must(sb.from('review_log').insert(part.map((l) => ({ source: l.source, raw_name: l.raw, decision: l.decision, model_key: l.canonicalId || null, decided_on: l.date }))), 'review log')
   }
 
-  return `Pushed ${canon.length} models, ${aliasOut.length.toLocaleString()} aliases, ${skuSet.size} supply SKUs, ${priceCount.toLocaleString()} prices.`
+  return `Pushed ${canon.length} models, ${aliasOut.length.toLocaleString()} aliases, ${tonerCount.toLocaleString()} toner links (${skuSet.length} SKUs), ${priceCount.toLocaleString()} prices.`
 }
 
 /** Pull the working state from Supabase. */

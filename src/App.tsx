@@ -6,6 +6,7 @@ import { actions, useModelState } from './lib/store'
 import { CANON_FIELDS, Canonical, IGNORE, ROLE_LABEL, Role, State, linkKey, modelLabel } from './lib/types'
 import { parse } from './lib/normalize'
 import { rowCtx } from './lib/match'
+import { tonersForModel } from './lib/toner'
 import { exportMaster } from './lib/workbook'
 import { cloudConfigured, pull, push, supabase } from './lib/cloud'
 
@@ -462,6 +463,7 @@ function CanonicalEditor({ c, state, close }: { c: Canonical; state: State; clos
       }
   const variants = new Map<string, number>()
   aliases.forEach((a) => variants.set(a.variant || '(none)', (variants.get(a.variant || '(none)') ?? 0) + 1))
+  const toners = tonersForModel(state, c.id)
   const others = state.canonicals.filter((x) => x.id !== c.id && x.manufacturer === c.manufacturer)
   const retired = Object.entries(state.redirects).filter(([, to]) => to === c.id).map(([from]) => from)
 
@@ -489,6 +491,27 @@ function CanonicalEditor({ c, state, close }: { c: Canonical; state: State; clos
           <span key={v} className="tag">{v} · {n}</span>
         ))}
       </div>
+
+      {toners.length > 0 && (
+        <>
+          <h2 style={{ fontSize: 12, color: 'var(--mute)', textTransform: 'uppercase' }}>Toners ({toners.length})</h2>
+          <table style={{ marginBottom: 12 }}>
+            <thead>
+              <tr><th>Color</th><th>SKU</th><th>Cost</th><th>Yield</th></tr>
+            </thead>
+            <tbody>
+              {toners.map((t, i) => (
+                <tr key={i}>
+                  <td>{t.color || '—'}</td>
+                  <td>{t.sku}</td>
+                  <td className="mute">{t.cost != null ? `$${t.cost}` : '—'}</td>
+                  <td className="mute">{t.yieldPages ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
 
       <h2 style={{ fontSize: 12, color: 'var(--mute)', textTransform: 'uppercase' }}>Aliases ({aliases.length})</h2>
       <table>

@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx'
 import { parse } from './normalize'
 import { rowCtx } from './match'
+import { expandModelNames, extractToners } from './toner'
 import { Canonical, IGNORE, LogEntry, Role, Row, Source, State, emptyState, idNumber, linkKey, modelLabel } from './types'
 
 const MASTER_SHEETS = ['Canonical_Models', 'Aliases']
@@ -10,7 +11,22 @@ function guessRole(header: string): Role {
   if (/manufact|brand|make|vendor|oem/.test(h)) return 'manufacturer'
   if (/famil|series/.test(h)) return 'family'
   if (/device.?type|^type$|categor|class/.test(h)) return 'deviceType'
-  if (/desc|^model\d*$/.test(h)) return 'description'
+  // Derived per-page metrics aren't a cartridge cost — keep them out of the toner columns.
+  if (/\/\s*page|per\s*page|cost\s*\/\s*page/.test(h)) return 'linked'
+  // Paired toner columns (Staples reference shape). SKU/cartridge wins over yield/cost
+  // so "Black Cartridge (Std Yield)" is the SKU, not a yield column.
+  const black = /\bblack\b|\bmono\b|\bbk\b/.test(h)
+  const color = /colou?r|c ?\/ ?m ?\/ ?y|cmy/.test(h)
+  if (/item ?#|item ?(no|num)/.test(h)) return 'linked' // EA Item # — sparse; ride-along, retag if needed
+  if (black || color) {
+    const rest = h.replace(/\b(black|mono|bk|colou?rs?)\b/g, '').trim() // header minus the colour word
+    const leadsSku = /^\(?\s*(cartridges?|toner|sku)/.test(rest)
+    // Cost wins (SKU columns never say cost); yield is a yield column unless the header leads with "cartridge".
+    if (/cost|price|\$/.test(h)) return black ? 'tonerBlackCost' : 'tonerColorCost'
+    if (/yield|pages/.test(h) && !leadsSku) return black ? 'tonerBlackYield' : 'tonerColorYield'
+    if (/cartridge|toner|\bsku\b/.test(h)) return black ? 'tonerBlackSku' : 'tonerColorSku'
+  }
+  if (/desc|^model\d*$|source|url|note/.test(h)) return 'description'
   if (/toner|supply|supplies|cartridge|sku|part.?n|item.?(no|num|#)/.test(h)) return 'supply'
   if (/price|msrp|cost|dealer|srp|list/.test(h)) return 'price'
   return 'linked'
@@ -83,7 +99,9 @@ export async function importFile(file: File, state: State): Promise<ImportResult
       headers.forEach((h, i) => {
         if (i > 0 && h) attrs[h] = cell(h, r[i])
       })
-      incoming.push({ raw, attrs })
+      // One cell can pack several models ("Canon D1150/D1170"); each becomes its own row,
+      // sharing the toner/attribute data, so every model links and inherits the toner.
+      for (const name of expandModelNames(raw)) incoming.push({ raw: name, attrs })
     }
     // Re-importing a source: counts restart from this file, existing names stay.
     for (const row of src.rows) row.count = 0
@@ -238,8 +256,34 @@ export function exportMaster(state: State): XLSX.WorkBook {
     ws['!freeze'] = { xSplit: 0, ySplit: 1 }
     XLSX.utils.book_append_sheet(wb, ws, name)
   }
+  // Toners: one row per (model, toner), deduped, costed — the structured payload for other apps.
+  const tonerMap = new Map<string, Record<string, string | number>>()
+  for (const s of Object.values(state.sources)) {
+    for (const row of s.rows) {
+      const link = state.links[linkKey(s.name, row.raw)]
+      if (!link || link === IGNORE || !byId.has(link)) continue
+      for (const t of extractToners(s, row)) {
+        const key = `${link}\u0001${t.sku}\u0001${t.color}`
+        if (!tonerMap.has(key))
+          tonerMap.set(key, {
+            'Canonical ID': link,
+            'Canonical Model': modelLabel(byId.get(link)!),
+            Type: t.type,
+            Color: t.color,
+            SKU: t.sku,
+            'Cost ($)': t.cost ?? '',
+            'Yield (pages)': t.yieldPages ?? '',
+            Source: s.name,
+          })
+      }
+    }
+  }
+  const tonerRows = [...tonerMap.values()]
+
   add('Canonical_Models', canonRows, canonHeader)
   add('Aliases', aliasRows, aliasHeader)
+  if (tonerRows.length)
+    add('Toners', tonerRows, ['Canonical ID', 'Canonical Model', 'Type', 'Color', 'SKU', 'Cost ($)', 'Yield (pages)', 'Source'])
   add(
     'Redirects',
     Object.entries(state.redirects).map(([k, v]) => ({ 'Retired ID': k, 'Now ID': v })),
