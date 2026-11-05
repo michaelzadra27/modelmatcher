@@ -2,15 +2,16 @@ import { useEffect, useMemo, useState } from 'react'
 import * as XLSX from 'xlsx'
 import { Group, Member, proposeGroups, reconcile, similar } from './lib/match'
 import ReconcileTab from './Reconcile'
+import CaptureTab from './Capture'
 import { actions, useModelState } from './lib/store'
-import { CANON_FIELDS, Canonical, IGNORE, ROLE_LABEL, Role, State, linkKey, modelLabel } from './lib/types'
+import { CANON_FIELDS, Canonical, DeviceSpec, IGNORE, ROLE_LABEL, Role, SPEC_GROUPS, State, linkKey, modelLabel } from './lib/types'
 import { parse } from './lib/normalize'
 import { rowCtx } from './lib/match'
 import { tonersForModel } from './lib/toner'
 import { exportMaster } from './lib/workbook'
 import { cloudConfigured, pull, push, supabase } from './lib/cloud'
 
-type Tab = 'import' | 'reconcile' | 'review' | 'master' | 'cloud'
+type Tab = 'import' | 'reconcile' | 'review' | 'master' | 'capture' | 'cloud'
 
 export default function App() {
   const state = useModelState()
@@ -27,9 +28,9 @@ export default function App() {
       <header>
         <h1>Model Master</h1>
         <nav>
-          {((state.master ? ['import', 'reconcile', 'review', 'master', 'cloud'] : ['import', 'review', 'master', 'cloud']) as Tab[]).map((t) => (
+          {((state.master ? ['import', 'reconcile', 'review', 'master', 'capture', 'cloud'] : ['import', 'review', 'master', 'capture', 'cloud']) as Tab[]).map((t) => (
             <button key={t} className={tab === t ? 'on' : ''} onClick={() => setTab(t)}>
-              {t === 'import' ? 'Import' : t === 'cloud' ? 'Cloud' : t === 'reconcile' ? `Reconcile (${recon.filter((r) => r.bucket !== 'none').length})` : t === 'review' ? `Review (${groups.length})` : `Master (${state.canonicals.length})`}
+              {t === 'import' ? 'Import' : t === 'capture' ? 'Capture' : t === 'cloud' ? 'Cloud' : t === 'reconcile' ? `Reconcile (${recon.filter((r) => r.bucket !== 'none').length})` : t === 'review' ? `Review (${groups.length})` : `Master (${state.canonicals.length})`}
             </button>
           ))}
         </nav>
@@ -43,6 +44,7 @@ export default function App() {
         {tab === 'reconcile' && <ReconcileTab state={state} rows={recon} goReview={() => setTab('review')} />}
         {tab === 'review' && <ReviewTab state={state} groups={groups} />}
         {tab === 'master' && <MasterTab state={state} />}
+        {tab === 'capture' && <CaptureTab state={state} />}
         {tab === 'cloud' && <CloudTab state={state} />}
       </main>
     </>
@@ -269,7 +271,7 @@ function GroupDetail({ group, groups, state }: { group: Group; groups: Group[]; 
   const field = (f: (typeof CANON_FIELDS)[number]) => (
     <div key={f.key}>
       <label>{f.label}</label>
-      <input value={draft[f.key as keyof typeof draft]} onChange={(e) => setDraft({ ...draft, [f.key]: e.target.value })} />
+      <input value={draft[f.key]} onChange={(e) => setDraft({ ...draft, [f.key]: e.target.value })} />
     </div>
   )
 
@@ -484,6 +486,24 @@ function CanonicalEditor({ c, state, close }: { c: Canonical; state: State; clos
           </div>
         ))}
       </div>
+
+      {c.spec && (
+        <div style={{ marginBottom: 10 }}>
+          <h2 style={{ fontSize: 12, color: 'var(--mute)', textTransform: 'uppercase' }}>
+            BLI spec <span className="tag ok">captured</span>
+          </h2>
+          <div className="fields">
+            {SPEC_GROUPS.flatMap((g) => g.fields)
+              .filter((f) => (c.spec as DeviceSpec)[f.key])
+              .map((f) => (
+                <div key={f.key}>
+                  <label>{f.label}</label>
+                  <div style={{ padding: '4px 0' }}>{String((c.spec as DeviceSpec)[f.key])}</div>
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
 
       <h2 style={{ fontSize: 12, color: 'var(--mute)', textTransform: 'uppercase' }}>Variants</h2>
       <div className="row">

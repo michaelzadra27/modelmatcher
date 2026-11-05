@@ -7,16 +7,9 @@
 // instead of flattening everything into one string. Any future sheet matches this
 // shape just by tagging its columns the same way.
 
-import { Role, Row, Source, State, linkKey } from './types'
+import { Role, Row, Source, State, SupplyRec, linkKey } from './types'
 
-export interface Toner {
-  sku: string
-  color: string // black | cyan | magenta | yellow | color
-  cost: number | null
-  yieldPages: number | null
-  type: string // toner | ink | drum | supply
-  raw: string // the original cell, kept for provenance
-}
+export type Toner = SupplyRec
 
 const NA = (s: string) => !s || /^n\/?a$/i.test(s.trim())
 

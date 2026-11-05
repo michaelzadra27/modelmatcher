@@ -47,3 +47,4 @@ input[type=checkbox] { width:auto }
 .fields.four { grid-template-columns:repeat(4,1fr) }
 .linklike { background:none; border:0; color:var(--accent); cursor:pointer; font:inherit; padding:2px 0 }
 .altbox { margin-top:14px; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--bg) }
+textarea { width:100%; resize:vertical }

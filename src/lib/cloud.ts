@@ -2,7 +2,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import { parse } from './normalize'
 import { rowCtx } from './match'
 import { extractToners, sourceHasToners } from './toner'
-import { Canonical, IGNORE, Role, Row, State, emptyState, idNumber, linkKey } from './types'
+import { Canonical, DeviceSpec, IGNORE, Role, Row, State, emptyState, emptySpec, idNumber, linkKey } from './types'
 
 const url = import.meta.env.VITE_SUPABASE_URL as string | undefined
 const anon = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
@@ -27,6 +27,45 @@ const toInt = (s: string) => {
 const toPrice = (s: string) => {
   const n = parseFloat(s.replace(/[^\d.\-]/g, ''))
   return Number.isFinite(n) ? n : null
+}
+const yn = (v: string) => (v === 'yes' ? true : v === 'no' ? false : null)
+
+/** The BLI spec fields of a model as database columns (empty object when no spec captured). */
+function specColumns(spec: Canonical['spec']): Record<string, unknown> {
+  if (!spec) return {}
+  return {
+    full_name: spec.fullName || null,
+    device_class: spec.deviceClass || null,
+    color_capability: spec.colorCapability || null,
+    technology: spec.technology || null,
+    part_number: spec.partNumber || null,
+    street_price: toPrice(spec.streetPrice),
+    srp_price: toPrice(spec.srpPrice),
+    intro_date: spec.introDate || null,
+    manufacturing_status: spec.manufacturingStatus || null,
+    discontinued_date: spec.discontinuedDate || null,
+    estimated_end_of_support: spec.estimatedEndOfSupport || null,
+    speed_ppm: toInt(spec.speedPpm),
+    speed_raw: spec.speedRaw || null,
+    first_copy_out_sec: toPrice(spec.firstCopyOutSec),
+    scan_speed_simplex_black: toInt(spec.scanSpeedSimplexBlack),
+    scan_speed_simplex_color: toInt(spec.scanSpeedSimplexColor),
+    scan_speed_duplex_black: toInt(spec.scanSpeedDuplexBlack),
+    scan_speed_duplex_color: toInt(spec.scanSpeedDuplexColor),
+    document_feeder: spec.documentFeeder || null,
+    scanner_feeder_type: spec.scannerFeederType || null,
+    fax_capable: yn(spec.faxCapable),
+    has_ethernet: yn(spec.hasEthernet),
+    has_wifi: yn(spec.hasWifi),
+    has_nfc: yn(spec.hasNfc),
+    network_interface_raw: spec.networkInterfaceRaw || null,
+    max_paper_size: spec.maxPaperSize || null,
+    paper_size_class: spec.paperSizeClass || null,
+    bli_confidence: toPrice(spec.confidence),
+    raw_spec: spec.rawSpec || null,
+    has_spec: true,
+    attributes: spec.attributes ?? {},
+  }
 }
 
 /** Push the working state to Supabase. Idempotent: natural keys + upserts, so re-pushing is safe. */
@@ -58,6 +97,7 @@ export async function push(state: State, say: Progress): Promise<string> {
           paper_size: c.paper || null,
           toner_family: c.toner || null,
           notes: c.notes || null,
+          ...specColumns(c.spec),
         })),
         { onConflict: 'canonical_key' }
       ).select('id,canonical_key'),
@@ -138,21 +178,29 @@ export async function push(state: State, say: Progress): Promise<string> {
   // tagged toner columns, tied to that row's model. One toner is deduped across models.
   say('Toners…')
   const supplyRows = new Map<string, { sku: string; color: string; supply_type: string; yield_pages: number | null; cost: number | null; description: string }>()
-  const msPairs = new Map<string, { model_id: string; sku: string; source_id: string; cost: number | null; yield_pages: number | null }>()
+  const msPairs = new Map<string, { model_id: string; sku: string; source_id: string | null; cost: number | null; yield_pages: number | null }>()
   let tonerCount = 0
+  const addToner = (mid: string, t: { sku: string; color: string; cost: number | null; yieldPages: number | null; type: string; raw: string }, sid: string | null) => {
+    if (!t.sku) return
+    if (!supplyRows.has(t.sku))
+      supplyRows.set(t.sku, { sku: t.sku, color: t.color || 'unknown', supply_type: t.type, yield_pages: t.yieldPages, cost: t.cost, description: t.raw })
+    msPairs.set(`${mid}|${t.sku}`, { model_id: mid, sku: t.sku, source_id: sid, cost: t.cost, yield_pages: t.yieldPages })
+    tonerCount++
+  }
   for (const s of Object.values(state.sources)) {
     if (!sourceHasToners(s)) continue
     for (const r of s.rows) {
       const link = state.links[linkKey(s.name, r.raw)]
       const mid = link && link !== IGNORE ? modelId.get(link) : undefined
       if (!mid) continue
-      for (const t of extractToners(s, r)) {
-        if (!supplyRows.has(t.sku))
-          supplyRows.set(t.sku, { sku: t.sku, color: t.color || 'unknown', supply_type: t.type, yield_pages: t.yieldPages, cost: t.cost, description: t.raw })
-        msPairs.set(`${mid}|${t.sku}`, { model_id: mid, sku: t.sku, source_id: sourceId.get(s.name)!, cost: t.cost, yield_pages: t.yieldPages })
-        tonerCount++
-      }
+      for (const t of extractToners(s, r)) addToner(mid, t, sourceId.get(s.name)!)
     }
+  }
+  // Supplies captured from BLI specs (not tied to a source sheet).
+  for (const [cid, supplies] of Object.entries(state.capturedSupplies)) {
+    const mid = modelId.get(cid)
+    if (!mid) continue
+    for (const t of supplies) addToner(mid, t, null)
   }
   const skuSet = [...supplyRows.keys()]
   const supplyId = new Map<string, string>()
@@ -201,6 +249,46 @@ export async function push(state: State, say: Progress): Promise<string> {
   return `Pushed ${canon.length} models, ${aliasOut.length.toLocaleString()} aliases, ${tonerCount.toLocaleString()} toner links (${skuSet.length} SKUs), ${priceCount.toLocaleString()} prices.`
 }
 
+const str = (v: unknown) => (v == null ? '' : String(v))
+
+/** Reconstruct a DeviceSpec from a models row (inverse of specColumns). */
+function specFromRow(m: any): DeviceSpec {
+  const b = (v: boolean | null) => (v == null ? '' : v ? 'yes' : 'no')
+  return {
+    ...emptySpec(),
+    fullName: str(m.full_name),
+    deviceClass: str(m.device_class),
+    colorCapability: str(m.color_capability),
+    technology: str(m.technology),
+    partNumber: str(m.part_number),
+    streetPrice: str(m.street_price),
+    srpPrice: str(m.srp_price),
+    introDate: str(m.intro_date),
+    manufacturingStatus: str(m.manufacturing_status),
+    discontinuedDate: str(m.discontinued_date),
+    estimatedEndOfSupport: str(m.estimated_end_of_support),
+    speedPpm: str(m.speed_ppm),
+    speedRaw: str(m.speed_raw),
+    firstCopyOutSec: str(m.first_copy_out_sec),
+    scanSpeedSimplexBlack: str(m.scan_speed_simplex_black),
+    scanSpeedSimplexColor: str(m.scan_speed_simplex_color),
+    scanSpeedDuplexBlack: str(m.scan_speed_duplex_black),
+    scanSpeedDuplexColor: str(m.scan_speed_duplex_color),
+    documentFeeder: str(m.document_feeder),
+    scannerFeederType: str(m.scanner_feeder_type),
+    faxCapable: b(m.fax_capable),
+    hasEthernet: b(m.has_ethernet),
+    hasWifi: b(m.has_wifi),
+    hasNfc: b(m.has_nfc),
+    networkInterfaceRaw: str(m.network_interface_raw),
+    maxPaperSize: str(m.max_paper_size),
+    paperSizeClass: str(m.paper_size_class),
+    confidence: str(m.bli_confidence),
+    rawSpec: str(m.raw_spec),
+    attributes: m.attributes ?? {},
+  }
+}
+
 /** Pull the working state from Supabase. */
 export async function pull(say: Progress): Promise<State> {
   const sb = supabase!
@@ -209,7 +297,7 @@ export async function pull(say: Progress): Promise<State> {
   say('Models…')
   const models: any[] = []
   for (let from = 0; ; from += 1000) {
-    const rows = await must(sb.from('models').select('id,canonical_key,model,generation,line,family,device_type,ppm,color,paper_size,toner_family,notes,manufacturers(name)').range(from, from + 999), 'models')
+    const rows = await must(sb.from('models').select('*,manufacturers(name)').range(from, from + 999), 'models')
     models.push(...rows)
     if (rows.length < 1000) break
   }
@@ -229,6 +317,7 @@ export async function pull(say: Progress): Promise<State> {
       paper: m.paper_size ?? '',
       toner: m.toner_family ?? '',
       notes: m.notes ?? '',
+      ...(m.has_spec ? { spec: specFromRow(m) } : {}),
     } satisfies Canonical)
   }
 

@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import { Group, Member, proposeGroups, reconcile } from './match'
-import { Canonical, IGNORE, LogEntry, Role, State, emptyState, fmtId, linkKey } from './types'
+import { Canonical, DeviceSpec, IGNORE, LogEntry, Role, State, SupplyRec, emptyState, fmtId, linkKey } from './types'
 import { importFile } from './workbook'
 
 const KEY = 'modelmaster.v1'
@@ -144,6 +144,41 @@ export const actions = {
       s = link(s, g.members, id, g.existingId ? 'auto-linked' : 'created')
     }
     set(s)
+  },
+
+  /** Save a BLI capture: attach the spec (and supplies) to an existing model, or create a new one. */
+  saveCapture(opts: { modelId: string | null; identity: Omit<Canonical, 'id' | 'spec'>; spec: DeviceSpec; supplies: SupplyRec[]; name: string }): string {
+    let s = state
+    let id = opts.modelId
+    if (id) {
+      const cur = id
+      s = {
+        ...s,
+        canonicals: s.canonicals.map((c) => {
+          if (c.id !== cur) return c
+          // Fill only blank identity fields; the model's keyed identity wins.
+          const merged = { ...c }
+          for (const [k, v] of Object.entries(opts.identity)) if (!merged[k as keyof Canonical] && v) (merged as any)[k] = v
+          return { ...merged, spec: opts.spec }
+        }),
+      }
+    } else {
+      const r = create(s, { ...opts.identity, spec: opts.spec })
+      s = r.s
+      id = r.id
+    }
+    // Record the device name as an alias under a synthetic source, so it resolves to this model.
+    const capName = 'BLI Capture'
+    const src = s.sources[capName] ?? { name: capName, columns: [], roles: {}, rows: [] }
+    const rows = src.rows.some((r) => r.raw === opts.name) ? src.rows : [...src.rows, { raw: opts.name, count: 1, attrs: {} }]
+    set({
+      ...s,
+      sources: { ...s.sources, [capName]: { ...src, rows } },
+      links: opts.name ? { ...s.links, [linkKey(capName, opts.name)]: id } : s.links,
+      capturedSupplies: { ...s.capturedSupplies, [id]: opts.supplies },
+      log: [...s.log, { date: today(), source: capName, raw: opts.name, decision: 'bli-capture', canonicalId: id }],
+    })
+    return id
   },
 
   updateCanonical(id: string, patch: Partial<Canonical>) {
