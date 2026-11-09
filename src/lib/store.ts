@@ -181,6 +181,45 @@ export const actions = {
     return id
   },
 
+  /** Bulk-apply a BLI device migration: enrich matched models, create new ones, in one update. */
+  applyMigration(items: { name: string; manufacturer: string; model: string; spec: DeviceSpec; targetId: string | null }[]): { enriched: number; created: number } {
+    let s = state
+    const capName = 'BLI Capture'
+    const src = { ...(s.sources[capName] ?? { name: capName, columns: [], roles: {} as Record<string, Role>, rows: [] }) }
+    src.rows = [...src.rows]
+    const links = { ...s.links }
+    const log = [...s.log]
+    let enriched = 0
+    let created = 0
+    for (const it of items) {
+      let id = it.targetId
+      if (id) {
+        const cur = id
+        s = {
+          ...s,
+          canonicals: s.canonicals.map((c) => {
+            if (c.id !== cur) return c
+            const merged = { ...c }
+            if (!merged.deviceType && it.spec.deviceClass) merged.deviceType = it.spec.deviceClass
+            return { ...merged, spec: it.spec }
+          }),
+        }
+        enriched++
+      } else {
+        const identity = { manufacturer: it.manufacturer, model: it.model, line: '', generation: '', family: [it.manufacturer, it.model].filter(Boolean).join(' '), deviceType: it.spec.deviceClass, ppm: it.spec.speedPpm, color: it.spec.colorCapability, paper: it.spec.maxPaperSize, toner: '', notes: '' }
+        const r = create(s, { ...identity, spec: it.spec })
+        s = r.s
+        id = r.id
+        created++
+      }
+      if (it.name && !src.rows.some((row) => row.raw === it.name)) src.rows.push({ raw: it.name, count: 1, attrs: {} })
+      if (it.name) links[linkKey(capName, it.name)] = id
+      log.push({ date: today(), source: capName, raw: it.name, decision: it.targetId ? 'bli-migrate-enrich' : 'bli-migrate-new', canonicalId: id })
+    }
+    set({ ...s, sources: { ...s.sources, [capName]: src }, links, log })
+    return { enriched, created }
+  },
+
   updateCanonical(id: string, patch: Partial<Canonical>) {
     set({ ...state, canonicals: state.canonicals.map((c) => (c.id === id ? { ...c, ...patch } : c)) })
   },

@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { CaptureResult, captureSpec } from './lib/bli/capture'
+import { MigrationItem, parseDevicesCsv, planMigration } from './lib/bli/migrate'
 import { canonMfr } from './lib/normalize'
 import { actions } from './lib/store'
 import { DeviceSpec, SPEC_GROUPS, State, modelLabel } from './lib/types'
@@ -63,6 +64,7 @@ export default function CaptureTab({ state }: { state: State }) {
             {saved && <span className="tag ok">{saved}</span>}
           </div>
         </div>
+        <MigrateDevices state={state} />
       </div>
     )
 
@@ -163,6 +165,93 @@ function ExtraFields({ spec }: { spec: DeviceSpec }) {
             ))}
           </tbody>
         </table>
+      )}
+    </div>
+  )
+}
+
+/** One-time bulk import of PrinterAPI's exported devices CSV. */
+function MigrateDevices({ state }: { state: State }) {
+  const [plan, setPlan] = useState<MigrationItem[] | null>(null)
+  const [targets, setTargets] = useState<Record<number, string>>({}) // index → override targetId ('' = new)
+  const [busy, setBusy] = useState(false)
+  const [done, setDone] = useState('')
+
+  const onFile = async (file: File) => {
+    setBusy(true)
+    setDone('')
+    const rows = parseDevicesCsv(await file.arrayBuffer())
+    setPlan(planMigration(rows, state))
+    setTargets({})
+    setBusy(false)
+  }
+  const targetOf = (i: number) => (i in targets ? targets[i] : plan![i].targetId ?? '')
+  const summary = useMemo(() => {
+    if (!plan) return { enrich: 0, create: 0 }
+    let enrich = 0
+    plan.forEach((_, i) => (targetOf(i) ? enrich++ : null))
+    return { enrich, create: plan.length - enrich }
+  }, [plan, targets])
+
+  const apply = () => {
+    if (!plan) return
+    setBusy(true)
+    const items = plan.map((p, i) => ({ name: p.name, manufacturer: p.manufacturer, model: p.model, spec: p.spec, targetId: targetOf(i) || null }))
+    const r = actions.applyMigration(items)
+    setDone(`Applied: ${r.enriched} models enriched, ${r.created} new models created. Go to Cloud → Push to save.`)
+    setPlan(null)
+    setBusy(false)
+  }
+
+  return (
+    <div className="card">
+      <h2>Migrate BLI devices (CSV)</h2>
+      <p className="mute">One-time import of a PrinterAPI <code>devices</code> export. Each device is matched to a canonical model (enriched) or flagged to create a new one. Pull from the cloud first so matching sees every existing model.</p>
+      {!plan && (
+        <label className="btn">
+          {busy ? 'Reading…' : 'Choose devices CSV…'}
+          <input type="file" accept=".csv" hidden onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])} />
+        </label>
+      )}
+      {done && <div className="toast" style={{ marginTop: 10 }}>{done}</div>}
+      {plan && (
+        <>
+          <div className="stats" style={{ marginTop: 10 }}>
+            <div className="stat"><b>{plan.length}</b><span>devices</span></div>
+            <div className="stat"><b>{summary.enrich}</b><span>enrich existing</span></div>
+            <div className="stat"><b>{summary.create}</b><span>create new</span></div>
+          </div>
+          <div className="list" style={{ maxHeight: 420 }}>
+            <table>
+              <thead><tr><th>Device</th><th>Class</th><th>Target model</th><th></th></tr></thead>
+              <tbody>
+                {plan.map((p, i) => {
+                  const t = targetOf(i)
+                  return (
+                    <tr key={i}>
+                      <td><b>{p.name}</b><br /><small className="mute">{p.manufacturer} {p.model} · {Math.round((Number(p.spec.confidence) || 0) * 100)}%</small></td>
+                      <td className="mute">{p.spec.deviceClass}</td>
+                      <td>
+                        <select value={t} onChange={(e) => setTargets((s) => ({ ...s, [i]: e.target.value }))}>
+                          <option value="">➕ New model</option>
+                          {p.candidates.map((c) => <option key={c.id} value={c.id}>{c.label} · {c.id} ({Math.round(c.score * 100)}%)</option>)}
+                          {state.canonicals.filter((c) => !p.candidates.some((x) => x.id === c.id)).slice(0, 300).map((c) => (
+                            <option key={c.id} value={c.id}>{modelLabel(c)} · {c.id}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td>{t ? <span className="tag ok">enrich</span> : <span className="tag">new</span>}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="row" style={{ marginTop: 10 }}>
+            <button className="btn primary" disabled={busy} onClick={apply}>Apply {plan.length} devices</button>
+            <button className="btn" disabled={busy} onClick={() => setPlan(null)}>Cancel</button>
+          </div>
+        </>
       )}
     </div>
   )
