@@ -30,9 +30,22 @@ const toPrice = (s: string) => {
 }
 const yn = (v: string) => (v === 'yes' ? true : v === 'no' ? false : null)
 
-/** The BLI spec fields of a model as database columns (empty object when no spec captured). */
+const SPEC_KEYS = [
+  'full_name', 'device_class', 'color_capability', 'technology', 'part_number', 'street_price', 'srp_price',
+  'intro_date', 'manufacturing_status', 'discontinued_date', 'estimated_end_of_support', 'speed_ppm', 'speed_raw',
+  'first_copy_out_sec', 'scan_speed_simplex_black', 'scan_speed_simplex_color', 'scan_speed_duplex_black',
+  'scan_speed_duplex_color', 'document_feeder', 'scanner_feeder_type', 'fax_capable', 'has_ethernet', 'has_wifi',
+  'has_nfc', 'network_interface_raw', 'max_paper_size', 'paper_size_class', 'bli_confidence', 'raw_spec',
+] as const
+
+/**
+ * The BLI spec fields of a model as database columns. Always returns the SAME set of keys so every
+ * model row in a bulk upsert is column-uniform — PostgREST unions keys across the batch and fills any
+ * object missing a key with NULL, which would violate the NOT NULL `attributes` column. When no spec
+ * is captured, every spec column is null, has_spec is false, and attributes is an empty object.
+ */
 function specColumns(spec: Canonical['spec']): Record<string, unknown> {
-  if (!spec) return {}
+  if (!spec) return { ...Object.fromEntries(SPEC_KEYS.map((k) => [k, null])), has_spec: false, attributes: {} }
   return {
     full_name: spec.fullName || null,
     device_class: spec.deviceClass || null,
