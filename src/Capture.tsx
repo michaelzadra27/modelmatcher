@@ -176,16 +176,27 @@ function MigrateDevices({ state }: { state: State }) {
   const [targets, setTargets] = useState<Record<number, string>>({}) // index → override targetId ('' = new)
   const [busy, setBusy] = useState(false)
   const [done, setDone] = useState('')
+  const [supplyRows, setSupplyRows] = useState<Record<string, unknown>[]>([])
+  const [supplyName, setSupplyName] = useState('')
 
+  const onSupplies = async (file: File) => {
+    const rows = parseDevicesCsv(await file.arrayBuffer())
+    setSupplyRows(rows)
+    setSupplyName(`${file.name} (${rows.length} supplies)`)
+    if (deviceRows.length) setPlan(planMigration(deviceRows, state, rows))
+  }
+  const [deviceRows, setDeviceRows] = useState<Record<string, unknown>[]>([])
   const onFile = async (file: File) => {
     setBusy(true)
     setDone('')
     const rows = parseDevicesCsv(await file.arrayBuffer())
-    setPlan(planMigration(rows, state))
+    setDeviceRows(rows)
+    setPlan(planMigration(rows, state, supplyRows))
     setTargets({})
     setBusy(false)
   }
   const targetOf = (i: number) => (i in targets ? targets[i] : plan![i].targetId ?? '')
+  const totalSupplies = useMemo(() => (plan ?? []).reduce((n, p) => n + p.supplies.length, 0), [plan])
   const summary = useMemo(() => {
     if (!plan) return { enrich: 0, create: 0 }
     let enrich = 0
@@ -196,9 +207,9 @@ function MigrateDevices({ state }: { state: State }) {
   const apply = () => {
     if (!plan) return
     setBusy(true)
-    const items = plan.map((p, i) => ({ name: p.name, manufacturer: p.manufacturer, model: p.model, spec: p.spec, targetId: targetOf(i) || null }))
+    const items = plan.map((p, i) => ({ name: p.name, manufacturer: p.manufacturer, model: p.model, spec: p.spec, supplies: p.supplies, targetId: targetOf(i) || null }))
     const r = actions.applyMigration(items)
-    setDone(`Applied: ${r.enriched} models enriched, ${r.created} new models created. Go to Cloud → Push to save.`)
+    setDone(`Applied: ${r.enriched} models enriched, ${r.created} new models created, ${r.supplies} supplies attached. Go to Cloud → Push to save.`)
     setPlan(null)
     setBusy(false)
   }
@@ -208,10 +219,17 @@ function MigrateDevices({ state }: { state: State }) {
       <h2>Migrate BLI devices (CSV)</h2>
       <p className="mute">One-time import of a PrinterAPI <code>devices</code> export. Each device is matched to a canonical model (enriched) or flagged to create a new one. Pull from the cloud first so matching sees every existing model.</p>
       {!plan && (
-        <label className="btn">
-          {busy ? 'Reading…' : 'Choose devices CSV…'}
-          <input type="file" accept=".csv" hidden onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])} />
-        </label>
+        <div className="row">
+          <label className="btn">
+            {busy ? 'Reading…' : 'Choose devices CSV…'}
+            <input type="file" accept=".csv" hidden onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])} />
+          </label>
+          <label className="btn">
+            {supplyName ? '✓ supplies loaded' : 'Add device_supplies CSV (optional)'}
+            <input type="file" accept=".csv" hidden onChange={(e) => e.target.files?.[0] && onSupplies(e.target.files[0])} />
+          </label>
+          {supplyName && <span className="mute">{supplyName}</span>}
+        </div>
       )}
       {done && <div className="toast" style={{ marginTop: 10 }}>{done}</div>}
       {plan && (
@@ -220,6 +238,7 @@ function MigrateDevices({ state }: { state: State }) {
             <div className="stat"><b>{plan.length}</b><span>devices</span></div>
             <div className="stat"><b>{summary.enrich}</b><span>enrich existing</span></div>
             <div className="stat"><b>{summary.create}</b><span>create new</span></div>
+            <div className="stat"><b>{totalSupplies}</b><span>supplies</span></div>
           </div>
           <div className="list" style={{ maxHeight: 420 }}>
             <table>

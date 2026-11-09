@@ -4,10 +4,16 @@
 import * as XLSX from 'xlsx'
 import { Bucket, reconcile } from '../match'
 import { canonMfr, parse } from '../normalize'
-import { DeviceSpec, State, emptySpec } from '../types'
+import { DeviceSpec, State, SupplyRec, emptySpec } from '../types'
 
 const s = (v: unknown) => (v == null ? '' : String(v).trim())
 const yn = (v: unknown) => { const t = s(v).toLowerCase(); return t === 'true' ? 'yes' : t === 'false' ? 'no' : '' }
+const n = (v: unknown) => { const x = parseFloat(s(v).replace(/[^\d.-]/g, '')); return Number.isFinite(x) ? x : null }
+
+/** A device_supplies CSV row → SupplyRec (part number is the SKU; description kept as raw). */
+export function supplyFromCsvRow(r: Record<string, unknown>): SupplyRec {
+  return { sku: s(r.part_number) || s(r.description), color: s(r.color), cost: n(r.price), yieldPages: n(r.yield_pages) == null ? null : Math.round(n(r.yield_pages)!), type: s(r.supply_type) || 'supply', raw: s(r.raw_line) || s(r.description) }
+}
 
 /** A PrinterAPI devices-CSV row → DeviceSpec (columns are snake_case, matching our model columns). */
 export function specFromCsvRow(r: Record<string, unknown>): DeviceSpec {
@@ -54,10 +60,12 @@ export function specFromCsvRow(r: Record<string, unknown>): DeviceSpec {
 }
 
 export interface MigrationItem {
+  deviceId: string // PrinterAPI device UUID, to join supplies
   name: string // full device name (with manufacturer) used for matching + the alias
   manufacturer: string
   model: string
   spec: DeviceSpec
+  supplies: SupplyRec[]
   targetId: string | null // existing MM- key to enrich, or null to create a new model
   bucket: Bucket
   candidates: { id: string; label: string; score: number }[]
@@ -83,13 +91,21 @@ export function matchName(name: string, state: State): Pick<MigrationItem, 'targ
   return { targetId, bucket: row?.bucket ?? 'none', candidates: (row?.candidates ?? []).slice(0, 5).map((c) => ({ id: c.id, label: c.label, score: c.score })) }
 }
 
-/** Build the full migration plan: every device matched to a key or flagged as new. */
-export function planMigration(rows: Record<string, unknown>[], state: State): MigrationItem[] {
+/** Build the full migration plan: every device matched to a key or flagged as new, with its supplies. */
+export function planMigration(rows: Record<string, unknown>[], state: State, supplyRows: Record<string, unknown>[] = []): MigrationItem[] {
+  const byDevice = new Map<string, SupplyRec[]>()
+  for (const r of supplyRows) {
+    const did = s(r.device_id)
+    if (!did) continue
+    const list = byDevice.get(did) ?? []
+    list.push(supplyFromCsvRow(r))
+    byDevice.set(did, list)
+  }
   return rows.map((r) => {
     const spec = specFromCsvRow(r)
     const name = s(r.full_name) || s(r.model)
     const manufacturer = canonMfr(name) // brand detected from the full name
     const model = parse(name, { mfr: manufacturer }).base
-    return { name, manufacturer, model, spec, ...matchName(name, state) }
+    return { deviceId: s(r.id), name, manufacturer, model, spec, supplies: byDevice.get(s(r.id)) ?? [], ...matchName(name, state) }
   })
 }

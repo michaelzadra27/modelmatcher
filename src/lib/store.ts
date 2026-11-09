@@ -182,15 +182,17 @@ export const actions = {
   },
 
   /** Bulk-apply a BLI device migration: enrich matched models, create new ones, in one update. */
-  applyMigration(items: { name: string; manufacturer: string; model: string; spec: DeviceSpec; targetId: string | null }[]): { enriched: number; created: number } {
+  applyMigration(items: { name: string; manufacturer: string; model: string; spec: DeviceSpec; supplies?: SupplyRec[]; targetId: string | null }[]): { enriched: number; created: number; supplies: number } {
     let s = state
     const capName = 'BLI Capture'
     const src = { ...(s.sources[capName] ?? { name: capName, columns: [], roles: {} as Record<string, Role>, rows: [] }) }
     src.rows = [...src.rows]
     const links = { ...s.links }
     const log = [...s.log]
+    const capturedSupplies = { ...s.capturedSupplies }
     let enriched = 0
     let created = 0
+    let supplies = 0
     for (const it of items) {
       let id = it.targetId
       if (id) {
@@ -214,10 +216,14 @@ export const actions = {
       }
       if (it.name && !src.rows.some((row) => row.raw === it.name)) src.rows.push({ raw: it.name, count: 1, attrs: {} })
       if (it.name) links[linkKey(capName, it.name)] = id
+      if (it.supplies?.length) {
+        capturedSupplies[id] = [...(capturedSupplies[id] ?? []), ...it.supplies]
+        supplies += it.supplies.length
+      }
       log.push({ date: today(), source: capName, raw: it.name, decision: it.targetId ? 'bli-migrate-enrich' : 'bli-migrate-new', canonicalId: id })
     }
-    set({ ...s, sources: { ...s.sources, [capName]: src }, links, log })
-    return { enriched, created }
+    set({ ...s, sources: { ...s.sources, [capName]: src }, links, log, capturedSupplies })
+    return { enriched, created, supplies }
   },
 
   updateCanonical(id: string, patch: Partial<Canonical>) {
