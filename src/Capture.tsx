@@ -3,6 +3,7 @@ import { CaptureResult, captureSpec } from './lib/bli/capture'
 import { canonMfr } from './lib/normalize'
 import { actions } from './lib/store'
 import { DeviceSpec, SPEC_GROUPS, State, modelLabel } from './lib/types'
+import ModelPicker from './ModelPicker'
 
 /**
  * Paste a BLI spec sheet → parse it client-side → match to an existing MM- key (or create one)
@@ -109,12 +110,8 @@ export default function CaptureTab({ state }: { state: State }) {
             )}
           </div>
           <div className="row">
-            <select style={{ width: 360 }} value={target} onChange={(e) => setTarget(e.target.value)}>
-              <option value="">➕ Create a new model</option>
-              {state.canonicals.map((c) => (
-                <option key={c.id} value={c.id}>{modelLabel(c)} · {c.id}</option>
-              ))}
-            </select>
+            <ModelPicker models={state.canonicals} value={target} onPick={setTarget} placeholder="➕ New model — or search to attach to one…" width={360} />
+            {target && <button className="linklike" onClick={() => setTarget('')}>Create a new model instead</button>}
             {!target && (
               <>
                 <input style={{ width: 120 }} placeholder="Manufacturer" value={mfr} onChange={(e) => setMfr(e.target.value)} />

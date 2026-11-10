@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import { Group, Member, proposeGroups, reconcile } from './match'
+import { Group, Member, isSure, proposeGroups, reconcile, sureTarget } from './match'
 import { Canonical, DeviceSpec, IGNORE, LogEntry, Role, State, SupplyRec, emptyState, fmtId, linkKey } from './types'
 import { importFile } from './workbook'
 import { idbGet, idbSet } from './idb'
@@ -10,6 +10,8 @@ let state: State = emptyState()
 export const getState = () => state
 const listeners = new Set<() => void>()
 let saveTimer: number | undefined
+/** Link keys the latest import set automatically, so it can be undone. */
+let lastAuto: string[] = []
 
 /**
  * Load the saved working state from IndexedDB (call once before rendering). A state still sitting in
@@ -98,20 +100,34 @@ function create(s: State, draft: Group['draft']): { s: State; id: string } {
 }
 
 export const actions = {
-  async importFiles(files: File[]): Promise<string> {
+  /** Import workbooks, then link every name that surely matches a known model. `auto` = how many (undoable). */
+  async importFiles(files: File[]): Promise<{ msg: string; auto: number }> {
     const msgs: string[] = []
+    const autoKeys: string[] = []
     for (const f of files) {
       try {
         const r = await importFile(f, state)
         set(r.state)
         msgs.push(r.summary)
-        const auto = actions.autoResolve()
-        if (auto) msgs.push(`${auto} names already matched a known alias and were linked automatically`)
+        autoKeys.push(...actions.autoResolve())
       } catch (e) {
         msgs.push(`${f.name}: could not read (${(e as Error).message})`)
       }
     }
-    return msgs.join('\n')
+    lastAuto = autoKeys
+    if (autoKeys.length) msgs.push(`Linked ${autoKeys.length.toLocaleString()} names to models you already have.`)
+    return { msg: msgs.join('\n'), auto: autoKeys.length }
+  },
+
+  /** Take back the links the latest import made automatically (they return to the Inbox). */
+  undoAutoLinks(): number {
+    const keys = new Set(lastAuto.filter((k) => state.links[k] && state.links[k] !== IGNORE))
+    lastAuto = []
+    if (!keys.size) return 0
+    const links = Object.fromEntries(Object.entries(state.links).filter(([k]) => !keys.has(k)))
+    const log = state.log.filter((l) => !(l.decision === 'auto-linked' && keys.has(linkKey(l.source, l.raw))))
+    set({ ...state, links, log })
+    return keys.size
   },
 
   /** Make a source the authoritative model list: one canonical model per group of its names. */
@@ -128,14 +144,15 @@ export const actions = {
     set({ ...state, master: '' })
   },
 
-  /** Link names whose text already matches a confirmed alias (no human needed). Returns how many. */
-  autoResolve(): number {
-    const items = reconcile(state).filter((r) => r.bucket === 'resolved')
-    if (!items.length) return 0
-    set(
-      items.reduce((s, r) => link(s, [{ source: r.source, raw: r.raw }], r.resolvedId!, 'auto-linked'), state)
-    )
-    return items.length
+  /**
+   * Link names that surely match a known model, no human needed: the same text was linked before,
+   * or exactly one model shares the model number. Returns the link keys it set.
+   */
+  autoResolve(): string[] {
+    const items = reconcile(state).filter((r) => isSure(r) && sureTarget(r))
+    if (!items.length) return []
+    set(items.reduce((s, r) => link(s, [{ source: r.source, raw: r.raw }], sureTarget(r), 'auto-linked'), state))
+    return items.map((r) => linkKey(r.source, r.raw))
   },
 
   /** Confirm a batch of reconcile matches: each name → the canonical model the user picked. */
@@ -160,11 +177,11 @@ export const actions = {
     set(link(s, members, id, group.existingId ? 'linked' : 'created'))
   },
 
-  linkTo(members: Member[], canonicalId: string) {
+  linkTo(members: Pick<Member, 'source' | 'raw'>[], canonicalId: string) {
     set(link(state, members, canonicalId, 'merged'))
   },
 
-  ignore(members: Member[]) {
+  ignore(members: Pick<Member, 'source' | 'raw'>[]) {
     set(link(state, members, IGNORE, 'ignored'))
   },
 

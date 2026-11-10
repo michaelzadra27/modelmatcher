@@ -50,3 +50,19 @@ input[type=checkbox] { width:auto }
 textarea { width:100%; resize:vertical }
 .filters select { width:auto }
 .filters label { display:flex; align-items:center; gap:4px; white-space:nowrap }
+.picker { position:relative; display:inline-block }
+.picker .menu { position:absolute; left:0; right:0; top:calc(100% + 2px); z-index:20; background:var(--panel); border:1px solid var(--line); border-radius:6px; max-height:300px; overflow:auto; box-shadow:0 6px 20px rgba(0,0,0,.15); min-width:280px }
+.picker .opt { padding:6px 10px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+.picker .opt.on { background:var(--bg); box-shadow:inset 3px 0 var(--accent) }
+.lanes { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-bottom:16px }
+.lane { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px 16px; cursor:pointer; text-align:left; font:inherit; color:inherit }
+.lane:hover { border-color:var(--accent) }
+.lane.on { outline:2px solid var(--accent); border-color:var(--accent) }
+.lane.empty { opacity:.55 }
+.lane b { font-size:24px; display:block; line-height:1.1 }
+.lane .t { font-weight:600; display:block; margin-top:2px }
+.lane .d { color:var(--mute); font-size:12px }
+.done { text-align:center; padding:40px 16px }
+.done .big { font-size:20px; font-weight:700; color:var(--ok); margin-bottom:6px }
+.choices { display:flex; gap:6px; flex-wrap:wrap; align-items:center }
+@media (max-width:800px) { .lanes { grid-template-columns:1fr } .split { grid-template-columns:1fr } }

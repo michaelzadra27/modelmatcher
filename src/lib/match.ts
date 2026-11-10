@@ -70,7 +70,7 @@ function uniqueIdentity(p: Parsed, canon: Canon[]): string | null {
 }
 
 /** Group every unreviewed source row by manufacturer + model number + generation + product line. */
-export function proposeGroups(state: State): Group[] {
+export function proposeGroups(state: State, only?: Set<string>): Group[] {
   const canon = indexCanon(state.canonicals)
 
   // Level 1: loose text of every alias already linked to a canonical model.
@@ -86,6 +86,7 @@ export function proposeGroups(state: State): Group[] {
   for (const s of Object.values(state.sources)) {
     for (const r of s.rows) {
       if (state.links[linkKey(s.name, r.raw)]) continue
+      if (only && !only.has(linkKey(s.name, r.raw))) continue
       const ctx = rowCtx(s, r)
       const p = parse(r.raw, { mfr: ctx.mfr, desc: ctx.desc })
       items.push({ m: { source: s.name, raw: r.raw, count: r.count, variant: p.variant, attrs: r.attrs, columns: s.columns, ctx }, p })
@@ -283,7 +284,7 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   return inter / (a.size + b.size - inter)
 }
 
-/** Bucket every unreviewed name from the non-master sources against the existing canonical models. */
+/** Bucket every unreviewed name, from every source, against the existing canonical models. */
 export function reconcile(state: State): ReconRow[] {
   const aliasText = new Map<string, string>()
   for (const s of Object.values(state.sources))
@@ -301,7 +302,6 @@ export function reconcile(state: State): ReconRow[] {
 
   const out: ReconRow[] = []
   for (const s of Object.values(state.sources)) {
-    if (s.name === state.master) continue
     for (const r of s.rows) {
       if (state.links[linkKey(s.name, r.raw)]) continue
       const ctx = rowCtx(s, r)
@@ -351,4 +351,37 @@ export function reconcile(state: State): ReconRow[] {
     }
   }
   return out
+}
+
+/* ── Inbox: every name not yet linked, in exactly one lane ── */
+
+/** A sure match: the name was linked before, or one candidate shares its model number. */
+export const isSure = (r: ReconRow) => r.bucket === 'resolved' || r.bucket === 'confident'
+/** The model a sure match points at. */
+export const sureTarget = (r: ReconRow) => r.resolvedId ?? r.candidates[0]?.id ?? ''
+
+export interface InboxLanes {
+  /** Another way of writing a model that already exists. */
+  matched: ReconRow[]
+  /** Close to one or more models, but not certain: a person picks. */
+  pick: ReconRow[]
+  /** Not in the catalog: grouped into proposed new models. */
+  groups: Group[]
+  /** Names waiting across all three lanes. */
+  names: number
+}
+
+/** `forceNew` holds names the user sent from "pick" to "new models". */
+export function inbox(state: State, forceNew: Set<string> = new Set()): InboxLanes {
+  const matched: ReconRow[] = []
+  const pick: ReconRow[] = []
+  const fresh = new Set<string>()
+  for (const r of reconcile(state)) {
+    const k = linkKey(r.source, r.raw)
+    if (forceNew.has(k) || r.bucket === 'none') fresh.add(k)
+    else if (isSure(r)) matched.push(r)
+    else pick.push(r)
+  }
+  const groups = fresh.size ? proposeGroups(state, fresh) : []
+  return { matched, pick, groups, names: matched.length + pick.length + fresh.size }
 }

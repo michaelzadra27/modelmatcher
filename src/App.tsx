@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import * as XLSX from 'xlsx'
-import { Group, Member, proposeGroups, reconcile, similar } from './lib/match'
-import ReconcileTab from './Reconcile'
+import { InboxLanes, Member, inbox } from './lib/match'
+import InboxTab from './Inbox'
 import CaptureTab from './Capture'
 import CatalogTab from './Catalog'
+import ModelPicker from './ModelPicker'
 import { actions, useModelState, useSaveError } from './lib/store'
 import { CANON_FIELDS, Canonical, DeviceSpec, IGNORE, ROLE_LABEL, Role, SPEC_GROUPS, State, linkKey, modelLabel } from './lib/types'
 import { parse } from './lib/normalize'
@@ -12,28 +13,34 @@ import { tonersForModel } from './lib/toner'
 import { exportMaster } from './lib/workbook'
 import { cloudConfigured, pull, push, supabase } from './lib/cloud'
 
-type Tab = 'import' | 'reconcile' | 'review' | 'master' | 'catalog' | 'capture' | 'cloud'
+type Tab = 'import' | 'inbox' | 'master' | 'catalog' | 'capture' | 'cloud'
+
+const TABS: Tab[] = ['inbox', 'catalog', 'master', 'capture', 'import', 'cloud']
 
 export default function App() {
   const state = useModelState()
   const saveError = useSaveError()
-  const [tab, setTab] = useState<Tab>(Object.keys(state.sources).length ? 'review' : 'import')
   const [masterOpen, setMasterOpen] = useState<string | null>(null)
-  const groups = useMemo(() => proposeGroups(state), [state.sources, state.canonicals, state.links])
-  const recon = useMemo(() => (state.master ? reconcile(state) : []), [state.sources, state.canonicals, state.links, state.master])
+  // Names the user sent from "pick the right model" to "new models" (this session only).
+  const [forceNew, setForceNew] = useState<Set<string>>(new Set())
+  const box = useMemo(() => inbox(state, forceNew), [state.sources, state.canonicals, state.links, forceNew])
+  const [tab, setTab] = useState<Tab>(() => (box.names ? 'inbox' : state.canonicals.length ? 'catalog' : 'import'))
 
   const doExport = () => {
     XLSX.writeFile(exportMaster(state), 'Model Master.xlsx')
   }
+
+  const label = (t: Tab) =>
+    t === 'inbox' ? `Inbox${box.names ? ` (${box.names.toLocaleString()})` : ''}` : t === 'master' ? `Master (${state.canonicals.length})` : t[0].toUpperCase() + t.slice(1)
 
   return (
     <>
       <header>
         <h1>Model Master</h1>
         <nav>
-          {((state.master ? ['import', 'reconcile', 'review', 'master', 'catalog', 'capture', 'cloud'] : ['import', 'review', 'master', 'catalog', 'capture', 'cloud']) as Tab[]).map((t) => (
+          {TABS.map((t) => (
             <button key={t} className={tab === t ? 'on' : ''} onClick={() => setTab(t)}>
-              {t === 'import' ? 'Import' : t === 'capture' ? 'Capture' : t === 'catalog' ? 'Catalog' : t === 'cloud' ? 'Cloud' : t === 'reconcile' ? `Reconcile (${recon.filter((r) => r.bucket !== 'none').length})` : t === 'review' ? `Review (${groups.length})` : `Master (${state.canonicals.length})`}
+              {label(t)}
             </button>
           ))}
         </nav>
@@ -44,9 +51,8 @@ export default function App() {
       </header>
       <main>
         {saveError && <div className="toast" style={{ borderColor: 'var(--bad)', color: 'var(--bad)' }}>{saveError}</div>}
-        {tab === 'import' && <ImportTab state={state} groups={groups} go={setTab} />}
-        {tab === 'reconcile' && <ReconcileTab state={state} rows={recon} goReview={() => setTab('review')} />}
-        {tab === 'review' && <ReviewTab state={state} groups={groups} />}
+        {tab === 'import' && <ImportTab state={state} box={box} go={setTab} />}
+        {tab === 'inbox' && <InboxTab state={state} box={box} sendToNew={(k) => setForceNew((s) => new Set(s).add(k))} goImport={() => setTab('import')} />}
         {tab === 'master' && <MasterTab key={masterOpen ?? ''} state={state} initialId={masterOpen} />}
         {tab === 'catalog' && <CatalogTab onEdit={(id) => { setMasterOpen(id); setTab('master') }} canEdit={(id) => state.canonicals.some((c) => c.id === id)} />}
         {tab === 'capture' && <CaptureTab state={state} />}
@@ -58,19 +64,19 @@ export default function App() {
 
 /* ───────────────────────── Import ───────────────────────── */
 
-function ImportTab({ state, groups, go }: { state: State; groups: Group[]; go: (t: Tab) => void }) {
+function ImportTab({ state, box, go }: { state: State; box: InboxLanes; go: (t: Tab) => void }) {
   const [msg, setMsg] = useState('')
+  const [auto, setAuto] = useState(0)
   const [busy, setBusy] = useState(false)
   const [over, setOver] = useState(false)
   const take = async (files: FileList | File[]) => {
     setBusy(true)
-    setMsg(await actions.importFiles([...files]))
+    const r = await actions.importFiles([...files])
+    setMsg(r.msg)
+    setAuto(r.auto)
     setBusy(false)
   }
   const sources = Object.values(state.sources)
-  const autoLinks = groups.filter((g) => g.existingId)
-  const newGroups = groups.filter((g) => !g.existingId)
-  const unresolved = groups.filter((g) => g.attention.length)
   const aliasCount = Object.values(state.links).filter((v) => v !== IGNORE).length
 
   return (
@@ -98,28 +104,41 @@ function ImportTab({ state, groups, go }: { state: State; groups: Group[]; go: (
           <input type="file" multiple accept=".xlsx,.xls,.csv" hidden onChange={(e) => e.target.files && take(e.target.files)} />
         </label>
       </div>
-      {msg && <div className="toast" style={{ marginTop: 12 }}>{msg}</div>}
+      {msg && (
+        <div className="toast" style={{ marginTop: 12 }}>
+          {msg}
+          {auto > 0 && (
+            <>
+              {' '}
+              <button
+                className="linklike"
+                onClick={() => {
+                  const n = actions.undoAutoLinks()
+                  setAuto(0)
+                  setMsg(`${msg}\nUndid ${n.toLocaleString()} automatic links; those names are back in the Inbox.`)
+                }}
+              >
+                Undo
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
       {sources.length > 0 && (
         <>
-          <h3>What's new</h3>
-          <div className="stats">
-            <Stat n={state.canonicals.length} label="Canonical models" />
-            <Stat n={aliasCount} label="Aliases linked" />
-            <Stat n={autoLinks.length} label="Match existing models" />
-            <Stat n={newGroups.length} label="New model groups" />
-            <Stat n={unresolved.length} label="Need attention" />
+          <div className="stats" style={{ marginTop: 16 }}>
+            <Stat n={state.canonicals.length} label="Models" />
+            <Stat n={aliasCount} label="Names linked to a model" />
+            <Stat n={box.names} label="Names waiting in the Inbox" />
           </div>
-          <div className="row">
-            <button className="btn primary" onClick={() => go('review')}>Go to review</button>
-            {autoLinks.length > 0 && (
-              <button className="btn" onClick={() => actions.approveMany(autoLinks)}>
-                Auto-link {autoLinks.length} groups that match existing models
-              </button>
-            )}
-          </div>
+          {box.names > 0 && (
+            <div className="row">
+              <button className="btn primary" onClick={() => go('inbox')}>Open the Inbox →</button>
+            </div>
+          )}
 
-          <h3>Sources & column roles</h3>
+          <h3>Sheets & column roles</h3>
           {sources.map((s) => (
             <div className="card" key={s.name}>
               <div className="row" style={{ marginBottom: 6 }}>
@@ -134,7 +153,7 @@ function ImportTab({ state, groups, go }: { state: State; groups: Group[]; go: (
                     className="btn"
                     onClick={() => {
                       const r = actions.buildMaster(s.name)
-                      setMsg(`Master list built from "${s.name}": ${r.created} models created${r.flagged ? `, ${r.flagged} groups flagged for review` : ''}. Import other sources next, then reconcile them.`)
+                      setMsg(`Master list built from "${s.name}": ${r.created} models created${r.flagged ? `, ${r.flagged} groups left in the Inbox to check` : ''}. Names from other sheets are matched against these models.`)
                     }}
                   >
                     Use as master list
@@ -178,222 +197,6 @@ const Stat = ({ n, label }: { n: number; label: string }) => (
     <span>{label}</span>
   </div>
 )
-
-/* ───────────────────────── Review ───────────────────────── */
-
-type Filter = 'all' | 'existing' | 'new' | 'attention' | 'clean'
-
-function ReviewTab({ state, groups }: { state: State; groups: Group[] }) {
-  const [filter, setFilter] = useState<Filter>('new')
-  const [mfr, setMfr] = useState('')
-  const [q, setQ] = useState('')
-  const [sel, setSel] = useState<string | null>(null)
-  const [limit, setLimit] = useState(150)
-
-  const mfrs = useMemo(() => [...new Set(groups.map((g) => g.mfr || '(unknown)'))].sort(), [groups])
-  const shown = useMemo(() => {
-    const ql = q.trim().toLowerCase()
-    return groups.filter((g) => {
-      if (filter === 'existing' && !g.existingId) return false
-      if (filter === 'new' && g.existingId) return false
-      if (filter === 'attention' && !g.attention.length) return false
-      if (filter === 'clean' && (g.attention.length || g.existingId)) return false
-      if (mfr && (g.mfr || '(unknown)') !== mfr) return false
-      if (ql && !g.members.some((m) => m.raw.toLowerCase().includes(ql)) && !g.base.toLowerCase().includes(ql)) return false
-      return true
-    })
-  }, [groups, filter, mfr, q])
-
-  const current = groups.find((g) => g.id === sel) ?? shown[0] ?? null
-  const bulk = shown.filter((g) => g.existingId || !g.attention.length)
-
-  if (!groups.length)
-    return <div className="card">{Object.keys(state.sources).length ? 'Nothing left to review. Export your workbook.' : 'Import a workbook first.'}</div>
-
-  return (
-    <>
-      <div className="row">
-        <select style={{ width: 190 }} value={filter} onChange={(e) => setFilter(e.target.value as Filter)}>
-          <option value="all">All groups</option>
-          <option value="new">New models</option>
-          <option value="existing">Match existing models</option>
-          <option value="clean">New, no flags</option>
-          <option value="attention">Needs attention</option>
-        </select>
-        <select style={{ width: 160 }} value={mfr} onChange={(e) => setMfr(e.target.value)}>
-          <option value="">All manufacturers</option>
-          {mfrs.map((m) => <option key={m}>{m}</option>)}
-        </select>
-        <input style={{ width: 220 }} placeholder="Search names…" value={q} onChange={(e) => setQ(e.target.value)} />
-        <span className="mute">{shown.length} groups</span>
-        <div className="spacer" />
-        <button
-          className="btn"
-          disabled={!bulk.length}
-          onClick={() => confirm(`Approve ${bulk.length} unflagged groups as proposed?`) && actions.approveMany(bulk)}
-        >
-          Approve {bulk.length} unflagged
-        </button>
-      </div>
-      <div className="split">
-        <div className="list">
-          {shown.slice(0, limit).map((g) => (
-            <div key={g.id} className={'item' + (current?.id === g.id ? ' on' : '')} onClick={() => setSel(g.id)}>
-              <b>{g.existingId ? modelLabel(state.canonicals.find((c) => c.id === g.existingId) ?? g.draft) : modelLabel(g.draft)}</b>{' '}
-              <small>{g.mfr || '?'}</small>
-              {g.existingId && <span className="tag ok">existing</span>}
-              {g.attention.length > 0 && <span className="tag warn">check</span>}
-              <br />
-              <small>
-                {g.members.length} names · {g.sources.join(', ')}
-              </small>
-            </div>
-          ))}
-          {shown.length > limit && (
-            <div className="item" onClick={() => setLimit(limit + 300)}>Show more ({shown.length - limit} left)…</div>
-          )}
-        </div>
-        {current ? <GroupDetail key={current.id} group={current} groups={groups} state={state} /> : <div className="card">No groups match.</div>}
-      </div>
-    </>
-  )
-}
-
-const IDENTITY_FIELDS = CANON_FIELDS.filter((f) => ['manufacturer', 'model', 'generation', 'line'].includes(f.key))
-const SPEC_FIELDS = CANON_FIELDS.filter((f) => !['manufacturer', 'model', 'generation', 'line'].includes(f.key))
-
-function GroupDetail({ group, groups, state }: { group: Group; groups: Group[]; state: State }) {
-  const [draft, setDraft] = useState(group.draft)
-  const [picked, setPicked] = useState(() => new Set(group.members.map((m) => linkKey(m.source, m.raw))))
-  const [showSpecs, setShowSpecs] = useState(false)
-  const [target, setTarget] = useState('')
-  const existing = group.existingId ? state.canonicals.find((c) => c.id === group.existingId) : null
-  const chosen = group.members.filter((m) => picked.has(linkKey(m.source, m.raw)))
-  const allPicked = chosen.length === group.members.length
-  const near = useMemo(() => similar(group, groups, state.canonicals).filter((n) => n.canonicalId), [group, groups, state.canonicals])
-  const linkedCols = [...new Set(group.members.flatMap((m) => m.columns.filter((c) => state.sources[m.source].roles[c] === 'linked')))]
-
-  const field = (f: (typeof CANON_FIELDS)[number]) => (
-    <div key={f.key}>
-      <label>{f.label}</label>
-      <input value={draft[f.key]} onChange={(e) => setDraft({ ...draft, [f.key]: e.target.value })} />
-    </div>
-  )
-
-  return (
-    <div className="card">
-      {/* Header: what this group is and what will happen */}
-      {existing ? (
-        <div className="detailhead">
-          <div>
-            <div className="heading">{modelLabel(existing)}</div>
-            <div className="mute">
-              Matches an existing model · {existing.id} · {group.matchedBy === 'alias' ? 'name already linked before' : 'same model number'}
-            </div>
-          </div>
-          <span className="tag ok">existing</span>
-        </div>
-      ) : (
-        <div className="detailhead">
-          <div>
-            <div className="heading">{modelLabel(draft) || 'New model'}</div>
-            <div className="mute">
-              {group.members.length} name{group.members.length === 1 ? '' : 's'} from {group.sources.join(', ')} — looks like one new model. Confirm the details, then create it.
-            </div>
-          </div>
-          <span className="tag">gets a new MM- key</span>
-        </div>
-      )}
-
-      {group.attention.map((a) => <div className="warnbox" key={a}>{a}</div>)}
-
-      {/* Identity: the fields that define the key */}
-      {!existing && (
-        <>
-          <div className="fields four">{IDENTITY_FIELDS.map(field)}</div>
-          <button className="linklike" onClick={() => setShowSpecs((s) => !s)}>
-            {showSpecs ? '▾ Hide specs' : '▸ Add specs (type, PPM, toner…)'}
-          </button>
-          {showSpecs && <div className="fields" style={{ marginTop: 8 }}>{SPEC_FIELDS.map(field)}</div>}
-        </>
-      )}
-
-      {/* Which names belong */}
-      <div className="row" style={{ margin: '14px 0 4px' }}>
-        <b>Names in this model</b>
-        <span className="mute">{chosen.length} of {group.members.length} selected</span>
-        <div className="spacer" />
-        <button
-          className="linklike"
-          onClick={() => setPicked(allPicked ? new Set() : new Set(group.members.map((m) => linkKey(m.source, m.raw))))}
-        >
-          {allPicked ? 'Clear all' : 'Select all'}
-        </button>
-      </div>
-      <table style={{ marginBottom: 14 }}>
-        <thead>
-          <tr>
-            <th></th><th>Name</th><th>Variant</th><th>Source</th><th>Rows</th>
-            {linkedCols.map((c) => <th key={c}>{c}</th>)}
-          </tr>
-        </thead>
-        <tbody>
-          {group.members.map((m) => {
-            const k = linkKey(m.source, m.raw)
-            const on = picked.has(k)
-            return (
-              <tr key={k} className="click" style={{ opacity: on ? 1 : 0.5 }} onClick={() => {
-                const n = new Set(picked)
-                on ? n.delete(k) : n.add(k)
-                setPicked(n)
-              }}>
-                <td><input type="checkbox" checked={on} readOnly /></td>
-                <td><b>{m.raw}</b></td>
-                <td className="mute">{m.variant || '—'}</td>
-                <td className="mute">{m.source}</td>
-                <td className="mute">{m.count}</td>
-                {linkedCols.map((c) => <td key={c} className="mute">{m.attrs[c] ?? ''}</td>)}
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-
-      {/* Primary action */}
-      <div className="row">
-        <button className="btn primary" disabled={!chosen.length || (!existing && !draft.model.trim())} onClick={() => actions.approve(group, draft, chosen)}>
-          {existing ? `Link ${chosen.length} name${chosen.length === 1 ? '' : 's'} to ${existing.model}` : `Create model + link ${chosen.length} name${chosen.length === 1 ? '' : 's'}`}
-        </button>
-        <button className="btn" disabled={!chosen.length} onClick={() => actions.ignore(chosen)}>Not a device — ignore</button>
-      </div>
-
-      {/* Already exists? Link to another model instead */}
-      {!existing && (
-        <div className="altbox">
-          <div className="mute" style={{ marginBottom: 6 }}>Actually an existing model? Link the selected names instead of creating a new one:</div>
-          {near.length > 0 && (
-            <div className="row" style={{ marginBottom: 6 }}>
-              {near.map((n) => (
-                <button key={n.canonicalId} className="btn" disabled={!chosen.length} onClick={() => actions.linkTo(chosen, n.canonicalId!)}>
-                  {n.label} <span className="mute">{Math.round(n.score * 100)}%</span>
-                </button>
-              ))}
-            </div>
-          )}
-          <div className="row">
-            <select style={{ width: 300 }} value={target} onChange={(e) => setTarget(e.target.value)}>
-              <option value="">Pick any existing model…</option>
-              {state.canonicals.map((c) => (
-                <option key={c.id} value={c.id}>{modelLabel(c)} · {c.id}</option>
-              ))}
-            </select>
-            <button className="btn" disabled={!target || !chosen.length} onClick={() => actions.linkTo(chosen, target)}>Link</button>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
 
 /* ───────────────────────── Master ───────────────────────── */
 
@@ -577,12 +380,7 @@ function CanonicalEditor({ c, state, close }: { c: Canonical; state: State; clos
         </button>
       </div>
       <div className="row">
-        <select style={{ width: 260 }} value={mergeTo} onChange={(e) => setMergeTo(e.target.value)}>
-          <option value="">Merge this model into…</option>
-          {others.map((x) => (
-            <option key={x.id} value={x.id}>{modelLabel(x)} {x.line && `(${x.line})`} · {x.id}</option>
-          ))}
-        </select>
+        <ModelPicker models={others} value={mergeTo} onPick={setMergeTo} placeholder="Merge this model into…" width={280} />
         <button
           className="btn"
           disabled={!mergeTo}
