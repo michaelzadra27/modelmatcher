@@ -28,9 +28,12 @@ export default function CaptureTab({ state }: { state: State }) {
   }
 
   const candidate = cap?.candidateId ? state.canonicals.find((c) => c.id === cap.candidateId) : null
+  const targetModel = target ? state.canonicals.find((c) => c.id === target) ?? null : null
 
   const save = () => {
     if (!cap || !spec) return
+    const before = targetModel?.spec
+    const changed = before ? specFields.filter((k) => String(before[k] ?? '') !== String(spec[k] ?? '')).length : 0
     const identity = {
       manufacturer: mfr,
       model,
@@ -45,7 +48,14 @@ export default function CaptureTab({ state }: { state: State }) {
       notes: '',
     }
     const id = actions.saveCapture({ modelId: target || null, identity, spec, supplies: cap.supplies, name: cap.name })
-    setSaved(`Saved to ${id}${target ? '' : ' (new model)'}.`)
+    const label = targetModel ? modelLabel(targetModel) : [mfr, model].filter(Boolean).join(' ')
+    setSaved(
+      !targetModel
+        ? `Created new model ${label} · ${id}.`
+        : before
+          ? `Already in ModelMaster — updated ${label} · ${id}. ${changed ? `${changed} spec field${changed === 1 ? '' : 's'} changed` : 'Spec unchanged'}, ${cap.supplies.length} supplies.`
+          : `Already in ModelMaster — added a BLI spec to ${label} · ${id} (it had none), ${cap.supplies.length} supplies.`
+    )
     setCap(null)
     setSpec(null)
     setText('')
@@ -60,8 +70,8 @@ export default function CaptureTab({ state }: { state: State }) {
           <textarea rows={14} style={{ fontFamily: 'monospace', fontSize: 12 }} value={text} onChange={(e) => setText(e.target.value)} placeholder="Paste the full BLI spec sheet text here…" />
           <div className="row" style={{ marginTop: 10 }}>
             <button className="btn primary" disabled={!text.trim()} onClick={parse}>Parse</button>
-            {saved && <span className="tag ok">{saved}</span>}
           </div>
+          {saved && <div className="toast" style={{ marginTop: 10, marginBottom: 0 }}>{saved} Push from the Cloud tab to save it to Supabase.</div>}
         </div>
       </div>
     )
@@ -76,6 +86,16 @@ export default function CaptureTab({ state }: { state: State }) {
             <div className="mute">Parse confidence {conf}% · {cap.result.supplies.length} supplies · {cap.result.unmappedKeys.length} extra fields</div>
           </div>
           <button className="btn" onClick={() => { setCap(null); setSpec(null) }}>Start over</button>
+        </div>
+
+        {/* Is this device already keyed? Say so up front. */}
+        <div className="toast" style={targetModel ? undefined : { borderColor: 'var(--warn)', color: 'var(--warn)' }}>
+          {targetModel
+            ? targetModel.spec
+              ? `Already in ModelMaster: ${modelLabel(targetModel)} · ${targetModel.id}. It already has a BLI spec${targetModel.spec.fullName ? ` (from "${targetModel.spec.fullName}")` : ''} — saving will update it.`
+              : `Already in ModelMaster: ${modelLabel(targetModel)} · ${targetModel.id}. It has no BLI spec yet — saving will add one.`
+            : 'Not found in ModelMaster — saving will create a new model. If it is actually here, pick it below.'}
+          {targetModel && cap.bucket === 'review' && target === cap.candidateId && ' (Possible match — double-check it is the same device.)'}
         </div>
 
         {/* Which model this spec belongs to */}
@@ -144,6 +164,8 @@ export default function CaptureTab({ state }: { state: State }) {
     </div>
   )
 }
+
+const specFields = SPEC_GROUPS.flatMap((g) => g.fields.map((f) => f.key))
 
 function ExtraFields({ spec }: { spec: DeviceSpec }) {
   const [open, setOpen] = useState(false)
