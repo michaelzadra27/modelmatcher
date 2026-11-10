@@ -211,7 +211,11 @@ export interface State {
   master: string // name of the source treated as the authoritative model list ('' = none)
   deleted: string[] // canonical ids removed locally, still to be deleted in the cloud
   capturedSupplies: Record<string, SupplyRec[]> // model id → supplies from a BLI capture
+  /** The cloud's last-change time when this copy last pulled or pushed ('' = never synced). Push refuses if the cloud moved on since. */
+  syncedAt: string
+  /** Local changes not pushed yet. */
+  dirty: boolean
 }
 
-export const emptyState = (): State => ({ sources: {}, canonicals: [], links: {}, log: [], deleted: [], nextId: 1, redirects: {}, master: '', capturedSupplies: {} })
+export const emptyState = (): State => ({ sources: {}, canonicals: [], links: {}, log: [], deleted: [], nextId: 1, redirects: {}, master: '', capturedSupplies: {}, syncedAt: '', dirty: false })
 export const linkKey = (source: string, raw: string) => `${source}\u0001${raw}`

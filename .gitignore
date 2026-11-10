@@ -6,3 +6,7 @@ dist
 
 # one-off data migration output (contains device data)
 migration-sql/
+
+# scratch bundle for npm run gen:lookup / check:sku
+scripts/.run.mjs
+scripts/.gen.mjs

@@ -64,8 +64,9 @@ function persist() {
 window.addEventListener('pagehide', () => saveTimer !== undefined && persist())
 document.addEventListener('visibilitychange', () => document.visibilityState === 'hidden' && saveTimer !== undefined && persist())
 
-function set(next: State) {
-  state = next
+/** Every change marks the copy as having unpushed work, except a pull/push/reset (`synced`). */
+function set(next: State, synced = false) {
+  state = synced || next.dirty ? next : { ...next, dirty: true }
   listeners.forEach((l) => l())
   window.clearTimeout(saveTimer)
   saveTimer = window.setTimeout(persist, 400)
@@ -287,10 +288,19 @@ export const actions = {
 
   /** Replace everything with state pulled from the cloud. */
   replace(next: State) {
-    set(next)
+    set(next, true)
+  },
+
+  /**
+   * Record a finished push of `pushed`. Anything changed while the push ran stays marked unpushed;
+   * deletions it carried out are cleared from the to-delete list.
+   */
+  markPushed(pushed: State, syncedAt: string) {
+    const done = new Set(pushed.deleted)
+    set({ ...state, syncedAt, dirty: state !== pushed, deleted: state.deleted.filter((d) => !done.has(d)) }, true)
   },
 
   reset() {
-    set(emptyState())
+    set(emptyState(), true)
   },
 }

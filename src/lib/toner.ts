@@ -8,6 +8,7 @@
 // shape just by tagging its columns the same way.
 
 import { Role, Row, Source, State, SupplyRec, linkKey } from './types'
+import { skuKey } from './sku'
 
 export type Toner = SupplyRec
 
@@ -197,18 +198,20 @@ export function expandModelNames(raw: string): string[] {
   return [...new Set(out)]
 }
 
-/** Live toners for one canonical model, deduped by sku+colour — for the Master editor preview. */
-export function tonersForModel(state: State, id: string): Toner[] {
-  const seen = new Map<string, Toner>()
+/**
+ * A model's toners as the cloud stores them — part numbers normalized (skuKey), one per part,
+ * sheet toners first (their price wins, as on push), then BLI-captured ones. For the Master editor.
+ */
+export function tonersForModel(state: State, id: string): (Toner & { from: string })[] {
+  const seen = new Map<string, Toner & { from: string }>()
+  const add = (t: Toner, from: string) => {
+    const sku = skuKey(t.sku)
+    if (sku && !seen.has(sku)) seen.set(sku, { ...t, sku, from })
+  }
   for (const s of Object.values(state.sources)) {
     if (!sourceHasToners(s)) continue
-    for (const r of s.rows) {
-      if (state.links[linkKey(s.name, r.raw)] !== id) continue
-      for (const t of extractToners(s, r)) {
-        const k = `${t.sku}\u0001${t.color}`
-        if (!seen.has(k)) seen.set(k, t)
-      }
-    }
+    for (const r of s.rows) if (state.links[linkKey(s.name, r.raw)] === id) for (const t of extractToners(s, r)) add(t, s.name)
   }
+  for (const t of state.capturedSupplies[id] ?? []) add(t, 'BLI')
   return [...seen.values()]
 }

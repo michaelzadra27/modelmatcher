@@ -92,8 +92,35 @@ async function assertLatestBuild() {
   }
 }
 
-export async function push(state: State, say: Progress): Promise<string> {
+/**
+ * The cloud's last-change time: the newest models / model_aliases update. Every push upserts every
+ * model and alias (bumping updated_at), so this moves whenever anyone pushes from anywhere.
+ */
+export async function cloudStamp(): Promise<string> {
+  const sb = supabase!
+  const latest = async (table: string) =>
+    ((await must(sb.from(table).select('updated_at').order('updated_at', { ascending: false }).limit(1), table)) as any[])[0]?.updated_at ?? ''
+  const [a, b] = await Promise.all([latest('models'), latest('model_aliases')])
+  return Date.parse(a || 0) >= Date.parse(b || 0) ? a : b
+}
+
+export class StaleError extends Error {}
+
+/**
+ * Refuse to push a copy that is behind the cloud: pushing sends the whole copy, so it would undo
+ * whatever was pushed since (links back to pending, toner links pruned). `force` skips the check.
+ */
+async function assertCurrent(state: State) {
+  if (!state.syncedAt)
+    throw new StaleError("This copy hasn't been synced with the cloud since this safety check was added, so it can't tell whether it's behind. Pull from cloud first (this replaces local data), or Push anyway if you know this copy is the latest.")
+  const now = await cloudStamp()
+  if (now && Date.parse(now) > Date.parse(state.syncedAt))
+    throw new StaleError(`The cloud has changed since this copy last synced (${new Date(state.syncedAt).toLocaleString()}); someone pushed from another tab or device at ${new Date(now).toLocaleString()}. Pull from cloud first, then redo any local changes, or Push anyway to overwrite theirs.`)
+}
+
+export async function push(state: State, say: Progress, opts: { force?: boolean } = {}): Promise<{ msg: string; syncedAt: string }> {
   await assertLatestBuild()
+  if (!opts.force) await assertCurrent(state)
   const sb = supabase!
   const canon = state.canonicals
   const roles = (s: string, c: string): Role => state.sources[s].roles[c]
@@ -301,7 +328,8 @@ export async function push(state: State, say: Progress): Promise<string> {
       await must(sb.from('review_log').insert(part.map((l) => ({ source: l.source, raw_name: l.raw, decision: l.decision, model_key: l.canonicalId || null, decided_on: l.date }))), 'review log')
   }
 
-  return `Pushed ${canon.length} models, ${aliasOut.length.toLocaleString()} aliases, ${tonerCount.toLocaleString()} toner links (${skuSet.length} SKUs), ${priceCount.toLocaleString()} prices.`
+  const syncedAt = await cloudStamp()
+  return { msg: `Pushed ${canon.length} models, ${aliasOut.length.toLocaleString()} aliases, ${tonerCount.toLocaleString()} toner links (${skuSet.length} SKUs), ${priceCount.toLocaleString()} prices.`, syncedAt }
 }
 
 const str = (v: unknown) => (v == null ? '' : String(v))
@@ -348,6 +376,8 @@ export function specFromRow(m: any): DeviceSpec {
 export async function pull(say: Progress): Promise<State> {
   const sb = supabase!
   const next = emptyState()
+  // Stamp first: anything pushed while we read makes the next push stop and ask for another pull.
+  next.syncedAt = await cloudStamp()
 
   say('Models…')
   const models: any[] = []
@@ -415,5 +445,28 @@ export async function pull(say: Progress): Promise<State> {
     if (rows.length < 1000) break
   }
   next.log = log.map((l) => ({ date: l.decided_on ?? '', source: l.source ?? '', raw: l.raw_name ?? '', decision: l.decision, canonicalId: l.model_key ?? '' }))
+
+  // Supplies captured from BLI specs (links with no source sheet), so the Master editor shows them too.
+  say('BLI supplies…')
+  for (let from = 0; ; from += 1000) {
+    const rows = await must(
+      sb.from('model_supplies').select('model_id,supply_id,cost,yield_pages,supplies(sku,color,supply_type,yield_pages,cost,description)').is('source_id', null).order('model_id').order('supply_id').range(from, from + 999),
+      'BLI supplies'
+    )
+    for (const r of rows as any[]) {
+      const key = keyById.get(r.model_id)
+      const sp = r.supplies
+      if (!key || !sp) continue
+      ;(next.capturedSupplies[key] ??= []).push({
+        sku: sp.sku,
+        color: sp.color === 'unknown' ? '' : sp.color ?? '',
+        cost: r.cost ?? sp.cost ?? null,
+        yieldPages: r.yield_pages ?? sp.yield_pages ?? null,
+        type: sp.supply_type ?? 'toner',
+        raw: sp.description ?? sp.sku,
+      })
+    }
+    if (rows.length < 1000) break
+  }
   return next
 }

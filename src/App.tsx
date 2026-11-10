@@ -11,7 +11,7 @@ import { parse } from './lib/normalize'
 import { rowCtx } from './lib/match'
 import { tonersForModel } from './lib/toner'
 import { exportMaster } from './lib/workbook'
-import { cloudConfigured, pull, push, supabase } from './lib/cloud'
+import { StaleError, cloudConfigured, pull, push, supabase } from './lib/cloud'
 
 type Tab = 'import' | 'inbox' | 'master' | 'catalog' | 'capture' | 'cloud'
 
@@ -31,7 +31,13 @@ export default function App() {
   }
 
   const label = (t: Tab) =>
-    t === 'inbox' ? `Inbox${box.names ? ` (${box.names.toLocaleString()})` : ''}` : t === 'master' ? `Master (${state.canonicals.length})` : t[0].toUpperCase() + t.slice(1)
+    t === 'inbox'
+      ? `Inbox${box.names ? ` (${box.names.toLocaleString()})` : ''}`
+      : t === 'master'
+        ? `Master (${state.canonicals.length})`
+        : t === 'cloud' && state.dirty
+          ? 'Cloud ● unpushed'
+          : t[0].toUpperCase() + t.slice(1)
 
   return (
     <>
@@ -203,6 +209,7 @@ const Stat = ({ n, label }: { n: number; label: string }) => (
 function MasterTab({ state, initialId = null }: { state: State; initialId?: string | null }) {
   const [q, setQ] = useState('')
   const [editId, setEditId] = useState<string | null>(initialId)
+  const [limit, setLimit] = useState(500)
 
   const stats = useMemo(() => {
     const m = new Map<string, { n: number; sources: Set<string> }>()
@@ -237,7 +244,7 @@ function MasterTab({ state, initialId = null }: { state: State; initialId?: stri
               <tr><th>ID</th><th>Manufacturer</th><th>Model</th><th>Line</th><th>Type</th><th>Aliases</th><th>Sources</th></tr>
             </thead>
             <tbody>
-              {rows.slice(0, 500).map((c) => (
+              {rows.slice(0, limit).map((c) => (
                 <tr key={c.id} className="click" onClick={() => setEditId(c.id)}>
                   <td className="mute">{c.id}</td><td>{c.manufacturer}</td><td>{[c.model, c.generation].filter(Boolean).join(' ')}</td><td>{c.line}</td><td>{c.deviceType}</td>
                   <td>{stats.get(c.id)?.n ?? 0}</td><td>{stats.get(c.id)?.sources.size ?? 0}</td>
@@ -245,6 +252,11 @@ function MasterTab({ state, initialId = null }: { state: State; initialId?: stri
               ))}
             </tbody>
           </table>
+          {rows.length > limit && (
+            <div className="item" onClick={() => setLimit(limit + 1000)}>
+              Showing {limit.toLocaleString()} of {rows.length.toLocaleString()} — show more…
+            </div>
+          )}
         </div>
       </div>
       {editing && <CanonicalEditor key={editing.id} c={editing} state={state} close={() => setEditId(null)} />}
@@ -325,15 +337,16 @@ function CanonicalEditor({ c, state, close }: { c: Canonical; state: State; clos
           <h2 style={{ fontSize: 12, color: 'var(--mute)', textTransform: 'uppercase' }}>Toners ({toners.length})</h2>
           <table style={{ marginBottom: 12 }}>
             <thead>
-              <tr><th>Color</th><th>SKU</th><th>Cost</th><th>Yield</th></tr>
+              <tr><th>Color</th><th>Part / SKU</th><th>Cost</th><th>Yield</th><th>From</th></tr>
             </thead>
             <tbody>
               {toners.map((t, i) => (
                 <tr key={i}>
                   <td>{t.color || '—'}</td>
-                  <td>{t.sku}</td>
+                  <td title={t.raw !== t.sku ? `As written: ${t.raw}` : undefined}>{t.sku}</td>
                   <td className="mute">{t.cost != null ? `$${t.cost}` : '—'}</td>
-                  <td className="mute">{t.yieldPages ?? '—'}</td>
+                  <td className="mute">{t.yieldPages?.toLocaleString() ?? '—'}</td>
+                  <td className="mute">{t.from}</td>
                 </tr>
               ))}
             </tbody>
@@ -409,6 +422,7 @@ function CloudTab({ state }: { state: State }) {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const [err, setErr] = useState('')
+  const [stale, setStale] = useState(false)
 
   useEffect(() => {
     if (!supabase) return
@@ -432,13 +446,22 @@ function CloudTab({ state }: { state: State }) {
   const run = async (fn: () => Promise<string>) => {
     setBusy(true)
     setErr('')
+    setStale(false)
     try {
       setMsg(await fn())
     } catch (e) {
       setErr((e as Error).message)
+      setStale(e instanceof StaleError)
     }
     setBusy(false)
   }
+  const doPush = (force: boolean) =>
+    run(async () => {
+      const snapshot = state
+      const r = await push(snapshot, setMsg, { force })
+      actions.markPushed(snapshot, r.syncedAt)
+      return r.msg
+    })
 
   if (!user)
     return (
@@ -474,10 +497,21 @@ function CloudTab({ state }: { state: State }) {
       </div>
       <p className="mute">
         Local: {state.canonicals.length.toLocaleString()} models, {Object.values(state.sources).reduce((n, s) => n + s.rows.length, 0).toLocaleString()} names.
-        Push saves everything (safe to repeat). Pull replaces your local working state with what is in the cloud.
+        {state.syncedAt ? ` Last synced with the cloud ${new Date(state.syncedAt).toLocaleString()}.` : ' Not synced with the cloud yet in this browser.'}
+        {' '}Push saves this copy to the cloud. Pull replaces this copy with the cloud's.
       </p>
+      {state.dirty ? (
+        <div className="warnbox">You have changes in this browser that aren't in the cloud yet. Push to save them.</div>
+      ) : state.syncedAt ? (
+        <div className="mute" style={{ marginBottom: 10 }}>✓ Everything here is in the cloud.</div>
+      ) : null}
       <div className="row">
-        <button className="btn primary" disabled={busy} onClick={() => run(() => push(state, setMsg))}>Push to cloud</button>
+        <button className="btn primary" disabled={busy} onClick={() => doPush(false)}>Push to cloud</button>
+        {stale && (
+          <button className="btn danger" disabled={busy} onClick={() => confirm('Overwrite the cloud with this copy? Anything pushed since your last Pull is undone.') && doPush(true)}>
+            Push anyway
+          </button>
+        )}
         <button
           className="btn"
           disabled={busy}

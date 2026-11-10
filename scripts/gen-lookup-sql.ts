@@ -1,6 +1,6 @@
 // Generates supabase/migrations/0004_lookup.sql from the parser tables in src/lib/normalize.ts,
 // so the database's name parsing stays identical to the app's. Re-run after changing those tables:
-//   npx esbuild scripts/gen-lookup-sql.ts --bundle --platform=node --format=esm --outfile=scripts/.gen.mjs && node scripts/.gen.mjs
+//   npm run gen:lookup
 import fs from 'fs'
 import { BRANDS, GENERATION, HINTS, LINES, NOISE, PREFIXES } from '../src/lib/normalize'
 
