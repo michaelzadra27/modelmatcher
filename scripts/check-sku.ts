@@ -18,6 +18,8 @@ const CASES = [
   'Ricoh MP 301 / 305+ Black Toner (841984)', 'GPR-58 C', 'TN-229V CMY', 'Brother TN331 Black', 'Dell 331-0719? – confirm',
   'Epson 502 (T502220/320/420-S)', 'Toner set (4 colors)', 'Kyocera TK-5282C', 'Canon PFI-1700 Ink Series', '', '  T502120  ',
   'Lexmark OEM toner for model – part # not confirmed', 'HP 937 (C/M/Y)', 'Priced by contract $', 'Xerox 106R01436',
+  'TN-223BK', 'TN223BK', 'Brother TN-223BK', 'DR-223CL', 'BU-223CL', 'WT-223CL', 'LC-3029BK', 'TN-730', 'TN730', 'TN-324K',
+  'Brother TN-730 Black', 'TK-5282C', 'CLT-C503L', 'TN-', 'XTN-223BK', 'tn-223bk',
 ]
 
 async function mmSku(raw: string): Promise<string> {

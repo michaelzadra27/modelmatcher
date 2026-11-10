@@ -2,15 +2,21 @@
 // different sources ("W2020A" from BLI, "HP 414A W2020A" from a toner sheet) is one supply.
 // Deliberately conservative: only when the text holds exactly one unambiguous part number;
 // bundles ("C/M/Y"), series ("TN210 Black"), sets and placeholders are left exactly as written.
-// MUST stay identical to mm_sku() in supabase/migrations/0006_sku_dedupe.sql (parity-tested).
+// MUST stay identical to mm_sku() in supabase/migrations/0007_sku_hyphen.sql (latest definition;
+// 0006 had the first). Check with: npm run check:sku
 
 const UNCERTAIN = /\?|CONFIRM|NOT IDENTIFIED|CANNOT BE IDENTIFIED|PRICED BY|\$/
 const MULTI = /\b(COLORS|COLOURS|SET|SERIES|PACKS?|INKS)\b/
 const PART = /^[A-Z0-9]+(-[A-Z0-9]+)*$/
 
 const isPart = (t: string) => t.length >= 6 && PART.test(t) && /\d/.test(t)
-/** Canon's regional "AA" suffix: 3018C005AA → 3018C005. */
-const canonical = (p: string) => p.replace(/^(\d{4}[A-Z]\d{3})AA$/, '$1')
+/**
+ * One spelling per part:
+ *   Canon's regional "AA" suffix: 3018C005AA → 3018C005
+ *   the hyphen after a TN/DR/LC/BU/WT series prefix: TN-223BK → TN223BK (BLI writes Brother parts
+ *   hyphenated, toner sheets don't; Konica Minolta's TN-324K / TN324K likewise)
+ */
+const canonical = (p: string) => p.replace(/^(\d{4}[A-Z]\d{3})AA$/, '$1').replace(/^(TN|DR|LC|BU|WT)-(\d)/, '$1$2')
 
 export function skuKey(raw: string): string {
   const text = (raw ?? '').trim()
