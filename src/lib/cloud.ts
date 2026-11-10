@@ -2,6 +2,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import { parse } from './normalize'
 import { rowCtx } from './match'
 import { extractToners, sourceHasToners } from './toner'
+import { skuKey } from './sku'
 import { Canonical, DeviceSpec, IGNORE, Role, Row, State, emptyState, emptySpec, idNumber, linkKey } from './types'
 
 const url = import.meta.env.VITE_SUPABASE_URL as string | undefined
@@ -205,10 +206,13 @@ export async function push(state: State, say: Progress): Promise<string> {
   const msPairs = new Map<string, { model_id: string; sku: string; source_id: string | null; cost: number | null; yield_pages: number | null }>()
   let tonerCount = 0
   const addToner = (mid: string, t: { sku: string; color: string; cost: number | null; yieldPages: number | null; type: string; raw: string }, sid: string | null) => {
-    if (!t.sku) return
-    if (!supplyRows.has(t.sku))
-      supplyRows.set(t.sku, { sku: t.sku, color: t.color || 'unknown', supply_type: t.type, yield_pages: t.yieldPages, cost: t.cost, description: t.raw })
-    msPairs.set(`${mid}|${t.sku}`, { model_id: mid, sku: t.sku, source_id: sid, cost: t.cost, yield_pages: t.yieldPages })
+    // One supply per manufacturer part number ("HP 414A W2020A" and "W2020A" are the same cartridge).
+    const sku = skuKey(t.sku)
+    if (!sku) return
+    if (!supplyRows.has(sku))
+      supplyRows.set(sku, { sku, color: t.color || 'unknown', supply_type: t.type, yield_pages: t.yieldPages, cost: t.cost, description: t.raw || t.sku })
+    // First link wins: toner-sheet links are added before BLI ones, so a sheet's price is kept.
+    if (!msPairs.has(`${mid}|${sku}`)) msPairs.set(`${mid}|${sku}`, { model_id: mid, sku, source_id: sid, cost: t.cost, yield_pages: t.yieldPages })
     tonerCount++
   }
   for (const s of Object.values(state.sources)) {
