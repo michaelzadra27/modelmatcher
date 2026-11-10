@@ -17,7 +17,7 @@ export interface Parsed {
 }
 
 // Explicit brand words → canonical display name.
-const BRANDS: [string, RegExp][] = [
+export const BRANDS: [string, RegExp][] = [
   ['HP', /\b(HP|HEWLETT[- ]?PACKARD|LASERJET|DESIGNJET|OFFICEJET|PAGEWIDE|DESKJET|LATEX)\b/],
   ['Canon', /\b(CANON|IMAGERUNNER|IMAGEPRESS|IMAGEFORCE|IMAGECLASS|IMAGEPROGRAF|MAXIFY|PIXMA)\b/],
   ['Ricoh', /\b(RICOH|AFICIO|SAVIN|LANIER|NASHUATEC|GESTETNER|INFOPRINT)\b/],
@@ -44,7 +44,7 @@ const BRANDS: [string, RegExp][] = [
 ]
 
 // Model-prefix hints used only when no brand word is present.
-const HINTS: [string, RegExp][] = [
+export const HINTS: [string, RegExp][] = [
   ['Canon', /^(IR|IPR|IP|LBP|MF)[ -]?[A-Z]?\d/],
   ['Ricoh', /^(IM|MP|SP)[ -]?[A-Z]?\d/],
   ['Brother', /^(HL|MFC|DCP)[ -]?[A-Z]?\d/],
@@ -55,7 +55,7 @@ const HINTS: [string, RegExp][] = [
 ]
 
 // Words that never identify a model.
-const NOISE = new Set(
+export const NOISE = new Set(
   `LASERJET LJ PRO ENTERPRISE COLOR COLOUR MFP MFD PRINTER PRINTERS COPIER SERIES IMAGERUNNER IMAGEPRESS
    IMAGEFORCE IMAGECLASS IMAGEPROGRAF ADVANCE ADV DX MONO LASER MULTIFUNCTION FLOW PRESS BIZHUB OFFICEJET
    DESIGNJET PAGEWIDE DESKJET ECOSYS TASKALFA VERSALINK ALTALINK WORKCENTRE PHASER AFICIO ACCURIO
@@ -65,7 +65,7 @@ const NOISE = new Set(
 
 // Prefixes that may be fused to the model number ("IMC3510", "iR3235", "MP3352SP").
 // Longest first. These are stripped so "IM C3510" and "IMC3510" agree.
-const PREFIXES = ['STUDIO', 'ESTUDIO', 'ADV', 'IPR', 'MFC', 'DCP', 'IR', 'IP', 'IM', 'MP', 'SP', 'MX', 'HL', 'FS', 'SC']
+export const PREFIXES = ['STUDIO', 'ESTUDIO', 'ADV', 'IPR', 'MFC', 'DCP', 'IR', 'IP', 'IM', 'MP', 'SP', 'MX', 'HL', 'FS', 'SC']
 
 function detectMfr(name: string, extra: string): { mfr: string; hint: boolean } {
   const up = name.toUpperCase()
@@ -91,7 +91,7 @@ export function mfrKey(m: string): string {
 
 // Product lines. A model number can be reused across lines (Canon imageFORCE 1643 vs iR1643i),
 // so the line is part of a model's identity. Names that do not mention a line are wildcards.
-const LINES: [string, RegExp][] = [
+export const LINES: [string, RegExp][] = [
   ['IFORCE', /IMAGEFORCE/],
   ['ICLASS', /IMAGECLASS/],
   ['IPR', /IMAGEPRESS|\bIPR\b/],
@@ -127,7 +127,7 @@ export function detectLine(...texts: string[]): string {
   return ''
 }
 
-const GENERATION = /^(II|III|IV)$/
+export const GENERATION = /^(II|III|IV)$/
 
 function tokenize(s: string): string[] {
   return s
