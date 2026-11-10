@@ -3,7 +3,7 @@ import * as XLSX from 'xlsx'
 import { Group, Member, proposeGroups, reconcile, similar } from './lib/match'
 import ReconcileTab from './Reconcile'
 import CaptureTab from './Capture'
-import { actions, useModelState } from './lib/store'
+import { actions, useModelState, useSaveError } from './lib/store'
 import { CANON_FIELDS, Canonical, DeviceSpec, IGNORE, ROLE_LABEL, Role, SPEC_GROUPS, State, linkKey, modelLabel } from './lib/types'
 import { parse } from './lib/normalize'
 import { rowCtx } from './lib/match'
@@ -15,6 +15,7 @@ type Tab = 'import' | 'reconcile' | 'review' | 'master' | 'capture' | 'cloud'
 
 export default function App() {
   const state = useModelState()
+  const saveError = useSaveError()
   const [tab, setTab] = useState<Tab>(Object.keys(state.sources).length ? 'review' : 'import')
   const groups = useMemo(() => proposeGroups(state), [state.sources, state.canonicals, state.links])
   const recon = useMemo(() => (state.master ? reconcile(state) : []), [state.sources, state.canonicals, state.links, state.master])
@@ -40,6 +41,7 @@ export default function App() {
         </button>
       </header>
       <main>
+        {saveError && <div className="toast" style={{ borderColor: 'var(--bad)', color: 'var(--bad)' }}>{saveError}</div>}
         {tab === 'import' && <ImportTab state={state} groups={groups} go={setTab} />}
         {tab === 'reconcile' && <ReconcileTab state={state} rows={recon} goReview={() => setTab('review')} />}
         {tab === 'review' && <ReviewTab state={state} groups={groups} />}

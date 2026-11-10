@@ -2,35 +2,71 @@ import { useSyncExternalStore } from 'react'
 import { Group, Member, proposeGroups, reconcile } from './match'
 import { Canonical, DeviceSpec, IGNORE, LogEntry, Role, State, SupplyRec, emptyState, fmtId, linkKey } from './types'
 import { importFile } from './workbook'
+import { idbGet, idbSet } from './idb'
 
 const KEY = 'modelmaster.v1'
 
-function load(): State {
-  try {
-    const raw = localStorage.getItem(KEY)
-    if (raw) return { ...emptyState(), ...JSON.parse(raw) }
-  } catch {
-    /* ignore */
-  }
-  return emptyState()
-}
-
-let state: State = load()
+let state: State = emptyState()
 export const getState = () => state
 const listeners = new Set<() => void>()
 let saveTimer: number | undefined
+
+/**
+ * Load the saved working state from IndexedDB (call once before rendering). A state still sitting in
+ * localStorage from older versions is moved over, then removed so it can't go stale.
+ */
+export async function hydrate(): Promise<void> {
+  let saved = await idbGet<State>(KEY).catch(() => undefined)
+  if (!saved) {
+    try {
+      const raw = localStorage.getItem(KEY)
+      if (raw) {
+        saved = JSON.parse(raw) as State
+        await idbSet(KEY, saved)
+        localStorage.removeItem(KEY)
+      }
+    } catch {
+      /* unreadable legacy copy: start empty, Pull restores from the cloud */
+    }
+  }
+  if (saved) state = { ...emptyState(), ...saved }
+}
+
+// Save failures are surfaced in the UI instead of being swallowed.
+let saveError = ''
+const errListeners = new Set<() => void>()
+export function useSaveError(): string {
+  return useSyncExternalStore(
+    (cb) => {
+      errListeners.add(cb)
+      return () => errListeners.delete(cb)
+    },
+    () => saveError
+  )
+}
+function setSaveError(msg: string) {
+  if (msg === saveError) return
+  saveError = msg
+  errListeners.forEach((l) => l())
+}
+
+function persist() {
+  window.clearTimeout(saveTimer)
+  saveTimer = undefined
+  idbSet(KEY, state).then(
+    () => setSaveError(''),
+    (e) => setSaveError(`Couldn't save your work in this browser (${(e as Error)?.message ?? e}). Push to the cloud or export the workbook so nothing is lost.`)
+  )
+}
+// Flush a pending save when the tab is hidden or closed.
+window.addEventListener('pagehide', () => saveTimer !== undefined && persist())
+document.addEventListener('visibilitychange', () => document.visibilityState === 'hidden' && saveTimer !== undefined && persist())
 
 function set(next: State) {
   state = next
   listeners.forEach((l) => l())
   window.clearTimeout(saveTimer)
-  saveTimer = window.setTimeout(() => {
-    try {
-      localStorage.setItem(KEY, JSON.stringify(state))
-    } catch {
-      /* storage full or blocked: the exported workbook is the real save */
-    }
-  }, 400)
+  saveTimer = window.setTimeout(persist, 400)
 }
 
 export function useModelState(): State {
