@@ -30,22 +30,14 @@ const toPrice = (s: string) => {
 }
 const yn = (v: string) => (v === 'yes' ? true : v === 'no' ? false : null)
 
-const SPEC_KEYS = [
-  'full_name', 'device_class', 'color_capability', 'technology', 'part_number', 'street_price', 'srp_price',
-  'intro_date', 'manufacturing_status', 'discontinued_date', 'estimated_end_of_support', 'speed_ppm', 'speed_raw',
-  'first_copy_out_sec', 'scan_speed_simplex_black', 'scan_speed_simplex_color', 'scan_speed_duplex_black',
-  'scan_speed_duplex_color', 'document_feeder', 'scanner_feeder_type', 'fax_capable', 'has_ethernet', 'has_wifi',
-  'has_nfc', 'network_interface_raw', 'max_paper_size', 'paper_size_class', 'bli_confidence', 'raw_spec',
-] as const
-
 /**
- * The BLI spec fields of a model as database columns. Always returns the SAME set of keys so every
- * model row in a bulk upsert is column-uniform — PostgREST unions keys across the batch and fills any
- * object missing a key with NULL, which would violate the NOT NULL `attributes` column. When no spec
- * is captured, every spec column is null, has_spec is false, and attributes is an empty object.
+ * The BLI spec fields of a model as database columns ({} when no spec captured). push() upserts
+ * spec-bearing and spec-less models in SEPARATE batches: PostgREST unions keys across a batch and
+ * fills missing ones with NULL, so mixing them would null `attributes` (NOT NULL) — and sending
+ * blank spec columns for spec-less models would wipe specs loaded in the database by other means.
  */
 function specColumns(spec: Canonical['spec']): Record<string, unknown> {
-  if (!spec) return { ...Object.fromEntries(SPEC_KEYS.map((k) => [k, null])), has_spec: false, attributes: {} }
+  if (!spec) return {}
   return {
     full_name: spec.fullName || null,
     device_class: spec.deviceClass || null,
@@ -94,7 +86,8 @@ export async function push(state: State, say: Progress): Promise<string> {
 
   say(`Models (${canon.length})…`)
   const modelId = new Map<string, string>()
-  for (const part of chunks(canon, 500)) {
+  const batches = [...chunks(canon.filter((c) => c.spec), 500), ...chunks(canon.filter((c) => !c.spec), 500)]
+  for (const part of batches) {
     const rows = await must(
       sb.from('models').upsert(
         part.map((c) => ({

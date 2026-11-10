@@ -3,3 +3,6 @@ dist
 *.tsbuildinfo
 .env
 .env.local
+
+# one-off data migration output (contains device data)
+migration-sql/
