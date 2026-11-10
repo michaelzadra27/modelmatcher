@@ -31,7 +31,11 @@ language sql immutable set search_path = public as $$
     (19, 'Pantum', '\yPANTUM\y'),
     (20, 'Panasonic', '\yPANASONIC\y'),
     (21, 'Develop', '\yDEVELOP\y'),
-    (22, 'Muratec', '\y(MURATEC|UTAX|TRIUMPH[- ]ADLER)\y')
+    (22, 'Muratec', '\y(MURATEC|UTAX|TRIUMPH[- ]ADLER)\y'),
+    (23, 'KIP', '\yKIP(\y|\d)'),
+    (24, 'Riso', '\y(RISO|RISOGRAPH|COMCOLOR)\y'),
+    (25, 'Xeikon', '\yXEIKON\y'),
+    (26, 'Xante', '\yXANTE\y')
   ) as b(ord, mfr, re) where p_upper ~ b.re order by b.ord limit 1
 $$;
 

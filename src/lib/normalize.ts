@@ -41,6 +41,10 @@ export const BRANDS: [string, RegExp][] = [
   ['Panasonic', /\bPANASONIC\b/],
   ['Develop', /\bDEVELOP\b/],
   ['Muratec', /\b(MURATEC|UTAX|TRIUMPH[- ]ADLER)\b/],
+  ['KIP', /\bKIP(\b|\d)/],
+  ['Riso', /\b(RISO|RISOGRAPH|COMCOLOR)\b/],
+  ['Xeikon', /\bXEIKON\b/],
+  ['Xante', /\bXANTE\b/],
 ]
 
 // Model-prefix hints used only when no brand word is present.
