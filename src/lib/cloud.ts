@@ -74,7 +74,25 @@ function specColumns(spec: Canonical['spec']): Record<string, unknown> {
 }
 
 /** Push the working state to Supabase. Idempotent: natural keys + upserts, so re-pushing is safe. */
+/**
+ * Refuse to push from a stale tab. The app is a single page, so a tab opened before a deploy keeps
+ * running the old code until reloaded; compare our bundle name with the one the site serves now.
+ */
+async function assertLatestBuild() {
+  if (import.meta.env.DEV) return
+  const mine = new URL(import.meta.url).pathname.split('/').pop()
+  try {
+    const html = await (await fetch('/', { cache: 'no-store' })).text()
+    const live = html.match(/assets\/(index-[^"']+\.js)/)?.[1]
+    if (live && mine && live !== mine)
+      throw new Error('A newer version of ModelMaster is deployed. Refresh the page (your data is kept), then Pull and Push again.')
+  } catch (e) {
+    if ((e as Error).message.startsWith('A newer version')) throw e // network hiccups shouldn't block a push
+  }
+}
+
 export async function push(state: State, say: Progress): Promise<string> {
+  await assertLatestBuild()
   const sb = supabase!
   const canon = state.canonicals
   const roles = (s: string, c: string): Role => state.sources[s].roles[c]
