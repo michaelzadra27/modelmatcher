@@ -241,6 +241,33 @@ export async function push(state: State, say: Progress): Promise<string> {
     .filter((r) => r.supply_id)
   for (const part of chunks(msRows, 500)) await must(sb.from('model_supplies').upsert(part, { onConflict: 'model_id,supply_id' }), 'model_supplies')
 
+  // A toner sheet's links mirror the sheet: drop links this push no longer produces for a pushed
+  // sheet (e.g. a cell now read as its real part number), then any supply nothing links to anymore.
+  // BLI links (no source) are never touched here.
+  const tonerSources = Object.values(state.sources).filter(sourceHasToners).map((s) => sourceId.get(s.name)!)
+  if (tonerSources.length) {
+    const keep = new Set(msRows.map((r) => `${r.model_id}|${r.supply_id}`))
+    const stale: { model_id: string; supply_id: string }[] = []
+    for (let from = 0; ; from += 1000) {
+      const rows = await must(
+        sb.from('model_supplies').select('model_id,supply_id').in('source_id', tonerSources).order('model_id').order('supply_id').range(from, from + 999),
+        'toner links'
+      )
+      for (const r of rows as any[]) if (!keep.has(`${r.model_id}|${r.supply_id}`)) stale.push(r)
+      if (rows.length < 1000) break
+    }
+    if (stale.length) say(`Removing ${stale.length} outdated toner links…`)
+    const byModel = new Map<string, string[]>()
+    for (const r of stale) byModel.set(r.model_id, [...(byModel.get(r.model_id) ?? []), r.supply_id])
+    for (const [mid, sids] of byModel) await must(sb.from('model_supplies').delete().eq('model_id', mid).in('supply_id', sids), 'remove toner link')
+    const touched = [...new Set(stale.map((r) => r.supply_id))]
+    for (const part of chunks(touched, 200)) {
+      const still = new Set((await must(sb.from('model_supplies').select('supply_id').in('supply_id', part), 'supply check') as any[]).map((r) => r.supply_id))
+      const orphans = part.filter((id) => !still.has(id))
+      if (orphans.length) await must(sb.from('supplies').delete().in('id', orphans), 'remove unused supplies')
+    }
+  }
+
   // Price book: one entry per alias × price column, priced as written in the source.
   say('Prices…')
   let priceCount = 0
