@@ -3,6 +3,7 @@ import * as XLSX from 'xlsx'
 import { Group, Member, proposeGroups, reconcile, similar } from './lib/match'
 import ReconcileTab from './Reconcile'
 import CaptureTab from './Capture'
+import CatalogTab from './Catalog'
 import { actions, useModelState, useSaveError } from './lib/store'
 import { CANON_FIELDS, Canonical, DeviceSpec, IGNORE, ROLE_LABEL, Role, SPEC_GROUPS, State, linkKey, modelLabel } from './lib/types'
 import { parse } from './lib/normalize'
@@ -11,12 +12,13 @@ import { tonersForModel } from './lib/toner'
 import { exportMaster } from './lib/workbook'
 import { cloudConfigured, pull, push, supabase } from './lib/cloud'
 
-type Tab = 'import' | 'reconcile' | 'review' | 'master' | 'capture' | 'cloud'
+type Tab = 'import' | 'reconcile' | 'review' | 'master' | 'catalog' | 'capture' | 'cloud'
 
 export default function App() {
   const state = useModelState()
   const saveError = useSaveError()
   const [tab, setTab] = useState<Tab>(Object.keys(state.sources).length ? 'review' : 'import')
+  const [masterOpen, setMasterOpen] = useState<string | null>(null)
   const groups = useMemo(() => proposeGroups(state), [state.sources, state.canonicals, state.links])
   const recon = useMemo(() => (state.master ? reconcile(state) : []), [state.sources, state.canonicals, state.links, state.master])
 
@@ -29,9 +31,9 @@ export default function App() {
       <header>
         <h1>Model Master</h1>
         <nav>
-          {((state.master ? ['import', 'reconcile', 'review', 'master', 'capture', 'cloud'] : ['import', 'review', 'master', 'capture', 'cloud']) as Tab[]).map((t) => (
+          {((state.master ? ['import', 'reconcile', 'review', 'master', 'catalog', 'capture', 'cloud'] : ['import', 'review', 'master', 'catalog', 'capture', 'cloud']) as Tab[]).map((t) => (
             <button key={t} className={tab === t ? 'on' : ''} onClick={() => setTab(t)}>
-              {t === 'import' ? 'Import' : t === 'capture' ? 'Capture' : t === 'cloud' ? 'Cloud' : t === 'reconcile' ? `Reconcile (${recon.filter((r) => r.bucket !== 'none').length})` : t === 'review' ? `Review (${groups.length})` : `Master (${state.canonicals.length})`}
+              {t === 'import' ? 'Import' : t === 'capture' ? 'Capture' : t === 'catalog' ? 'Catalog' : t === 'cloud' ? 'Cloud' : t === 'reconcile' ? `Reconcile (${recon.filter((r) => r.bucket !== 'none').length})` : t === 'review' ? `Review (${groups.length})` : `Master (${state.canonicals.length})`}
             </button>
           ))}
         </nav>
@@ -45,7 +47,8 @@ export default function App() {
         {tab === 'import' && <ImportTab state={state} groups={groups} go={setTab} />}
         {tab === 'reconcile' && <ReconcileTab state={state} rows={recon} goReview={() => setTab('review')} />}
         {tab === 'review' && <ReviewTab state={state} groups={groups} />}
-        {tab === 'master' && <MasterTab state={state} />}
+        {tab === 'master' && <MasterTab key={masterOpen ?? ''} state={state} initialId={masterOpen} />}
+        {tab === 'catalog' && <CatalogTab onEdit={(id) => { setMasterOpen(id); setTab('master') }} canEdit={(id) => state.canonicals.some((c) => c.id === id)} />}
         {tab === 'capture' && <CaptureTab state={state} />}
         {tab === 'cloud' && <CloudTab state={state} />}
       </main>
@@ -394,9 +397,9 @@ function GroupDetail({ group, groups, state }: { group: Group; groups: Group[]; 
 
 /* ───────────────────────── Master ───────────────────────── */
 
-function MasterTab({ state }: { state: State }) {
+function MasterTab({ state, initialId = null }: { state: State; initialId?: string | null }) {
   const [q, setQ] = useState('')
-  const [editId, setEditId] = useState<string | null>(null)
+  const [editId, setEditId] = useState<string | null>(initialId)
 
   const stats = useMemo(() => {
     const m = new Map<string, { n: number; sources: Set<string> }>()

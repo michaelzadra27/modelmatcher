@@ -48,3 +48,5 @@ input[type=checkbox] { width:auto }
 .linklike { background:none; border:0; color:var(--accent); cursor:pointer; font:inherit; padding:2px 0 }
 .altbox { margin-top:14px; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--bg) }
 textarea { width:100%; resize:vertical }
+.filters select { width:auto }
+.filters label { display:flex; align-items:center; gap:4px; white-space:nowrap }

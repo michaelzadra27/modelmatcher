@@ -276,7 +276,7 @@ export async function push(state: State, say: Progress): Promise<string> {
 const str = (v: unknown) => (v == null ? '' : String(v))
 
 /** Reconstruct a DeviceSpec from a models row (inverse of specColumns). */
-function specFromRow(m: any): DeviceSpec {
+export function specFromRow(m: any): DeviceSpec {
   const b = (v: boolean | null) => (v == null ? '' : v ? 'yes' : 'no')
   return {
     ...emptySpec(),
