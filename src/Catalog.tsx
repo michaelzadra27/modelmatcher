@@ -8,13 +8,14 @@ import { SPEC_GROUPS } from './lib/types'
  */
 
 const LIST_COLS =
-  'id,canonical_key,manufacturer,model,line,generation,family,device_type,device_class,color,color_capability,paper_size,paper_size_class,ppm,speed_ppm,street_price,srp_price,manufacturing_status,has_spec,full_name,alias_count,variant_count,supply_count'
+  'id,canonical_key,created_at,manufacturer,model,line,generation,family,device_type,device_class,color,color_capability,paper_size,paper_size_class,ppm,speed_ppm,street_price,srp_price,manufacturing_status,has_spec,full_name,alias_count,variant_count,supply_count'
 const PAGE = 100
 
 type Row = Record<string, any>
-type Sort = 'key' | 'name' | 'speed' | 'price'
+type Sort = 'key' | 'name' | 'new' | 'speed' | 'price'
 const SORTS: Record<Sort, { label: string; apply: (q: any) => any }> = {
   name: { label: 'Manufacturer · model', apply: (q) => q.order('manufacturer', { nullsFirst: false }).order('model') },
+  new: { label: 'Newest first', apply: (q) => q.order('created_at', { ascending: false }).order('canonical_key', { ascending: false }) },
   key: { label: 'MM key', apply: (q) => q.order('canonical_key') },
   speed: { label: 'Fastest first', apply: (q) => q.order('speed_ppm', { ascending: false, nullsFirst: false }).order('model') },
   price: { label: 'Street price ↑', apply: (q) => q.order('street_price', { ascending: true, nullsFirst: false }).order('model') },
@@ -26,10 +27,16 @@ const name = (r: Row) => [r.manufacturer, r.model, r.generation].filter(Boolean)
 const cls = (r: Row) => r.device_class ?? r.device_type ?? ''
 const color = (r: Row) => r.color_capability ?? r.color ?? ''
 
+/** "Added" windows for the stats strip; a window is also a filter on created_at. */
+const SINCE = { day: { label: 'Added in last 24 hours', ms: 864e5 }, week: { label: 'Added in last 7 days', ms: 7 * 864e5 } } as const
+type Since = keyof typeof SINCE | ''
+const sinceIso = (k: Since) => (k ? new Date(Date.now() - SINCE[k].ms).toISOString() : '')
+const added = (iso: string) => new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })
+
 export default function CatalogTab({ onEdit, canEdit }: { onEdit: (id: string) => void; canEdit: (id: string) => boolean }) {
   const [text, setText] = useState('')
   const [debounced, setDebounced] = useState('')
-  const [f, setF] = useState({ mfr: '', cls: '', color: '', paper: '', status: '', spec: false, supplies: false })
+  const [f, setF] = useState({ mfr: '', cls: '', color: '', paper: '', status: '', spec: false, supplies: false, since: '' as Since })
   const [sort, setSort] = useState<Sort>('name')
   const [page, setPage] = useState(0)
   const [rows, setRows] = useState<Row[]>([])
@@ -40,6 +47,18 @@ export default function CatalogTab({ onEdit, canEdit }: { onEdit: (id: string) =
   const [loading, setLoading] = useState(false)
   const [openKey, setOpenKey] = useState<string | null>(null)
   const reqId = useRef(0)
+  const [stats, setStats] = useState<{ day: number; week: number; total: number } | null>(null)
+
+  // Models added to the database in the last 24 hours / 7 days / ever (created_at on models).
+  useEffect(() => {
+    if (!supabase) return
+    const n = (since: Since) => {
+      let q: any = supabase!.from('model_catalog').select('canonical_key', { count: 'exact', head: true })
+      if (since) q = q.gte('created_at', sinceIso(since))
+      return q.then(({ count }: any) => count ?? 0)
+    }
+    Promise.all([n('day'), n('week'), n('')]).then(([day, week, total]) => setStats({ day, week, total }))
+  }, [])
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebounced(text), 250)
@@ -64,6 +83,7 @@ export default function CatalogTab({ onEdit, canEdit }: { onEdit: (id: string) =
     if (f.status) q = q.eq('manufacturing_status', f.status)
     if (f.spec) q = q.eq('has_spec', true)
     if (f.supplies) q = q.gt('supply_count', 0)
+    if (f.since) q = q.gte('created_at', sinceIso(f.since))
     // Every word must appear somewhere in the key, brand, model, family or BLI name.
     for (const w of clean(debounced).split(/\s+/).filter(Boolean))
       q = q.or(['canonical_key', 'manufacturer', 'model', 'family', 'full_name'].map((c) => `${c}.ilike.*${w}*`).join(','))
@@ -97,6 +117,17 @@ export default function CatalogTab({ onEdit, canEdit }: { onEdit: (id: string) =
   return (
     <div className="split" style={{ gridTemplateColumns: openKey ? 'minmax(0,1fr) 520px' : 'minmax(0,1fr)' }}>
       <div>
+        {stats && (
+          <div className="stats">
+            {(['day', 'week', ''] as Since[]).map((k) => (
+              <button key={k || 'all'} className={'stat click' + (f.since === k ? ' on' : '')} title={k ? 'Show only these models, newest first' : 'Show all models'}
+                onClick={() => { set({ since: k }); if (k) setSort('new') }}>
+                <b>{(k ? stats[k] : stats.total).toLocaleString()}</b>
+                <span>{k ? SINCE[k].label : 'Total models'}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <div className="row filters">
           <input style={{ width: 300, maxWidth: '100%' }} placeholder="Search any name, e.g. HP M454dw or MM-001036" value={text} onChange={(e) => setText(e.target.value)} autoFocus />
           <select value={f.mfr} onChange={(e) => set({ mfr: e.target.value })}>
@@ -127,7 +158,7 @@ export default function CatalogTab({ onEdit, canEdit }: { onEdit: (id: string) =
           <select value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
             {Object.entries(SORTS).map(([k, s]) => <option key={k} value={k}>{s.label}</option>)}
           </select>
-          {anyFilter && <button className="linklike" onClick={() => { setText(''); setF({ mfr: '', cls: '', color: '', paper: '', status: '', spec: false, supplies: false }) }}>Clear</button>}
+          {anyFilter && <button className="linklike" onClick={() => { setText(''); setF({ mfr: '', cls: '', color: '', paper: '', status: '', spec: false, supplies: false, since: '' }) }}>Clear</button>}
         </div>
         {(f.cls || f.color || f.paper || f.status) && !f.spec && (
           <p className="mute" style={{ marginTop: -6 }}>Class, color, paper and status come from BLI specs, so these filters only find models that have one.</p>
@@ -167,7 +198,7 @@ export default function CatalogTab({ onEdit, canEdit }: { onEdit: (id: string) =
             <tbody>
               {rows.map((r) => (
                 <tr key={r.canonical_key} className="click" style={openKey === r.canonical_key ? { background: 'var(--bg)' } : undefined} onClick={() => setOpenKey(r.canonical_key)}>
-                  <td className="mute">{r.canonical_key}</td>
+                  <td className="mute" title={r.created_at ? 'Added ' + added(r.created_at) : undefined}>{r.canonical_key}</td>
                   <td>
                     <b>{name(r)}</b>
                     {r.line && <span className="tag">{r.line}</span>}
