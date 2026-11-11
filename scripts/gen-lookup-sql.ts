@@ -116,6 +116,14 @@ begin
   -- A short letters-only token right after the core ("M428 FDW") is part of the variant.
   nxt := toks[idx + 1];
   if nxt is not null and nxt !~ '\\d' and length(nxt) <= 4 and not nxt = any(noise) then variant := variant || nxt; end if;
+  -- Copystar = Kyocera's US rebrand (copystar() in normalize.ts): CS NNNN(c)i → TASKalfa NNNN, old CS NNN0/NNN5 → KM-NNNN.
+  if mfr = 'Kyocera' and base ~ '^CS\\d{3,4}$' then
+    if variant ~ '^C?I' or length(base) = 5 or base ~ '[1-4]$' then
+      base := substr(base, 3); line := coalesce(nullif(line, ''), 'TASKALFA');
+    else
+      base := 'KM' || substr(base, 3);
+    end if;
+  end if;
   has_core := true;
   return next;
 end

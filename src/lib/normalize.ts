@@ -190,6 +190,19 @@ function parseName(
   return { base, variant: variant + rest, gen }
 }
 
+/**
+ * Copystar is Kyocera's US rebrand of the same machines. "CS 4002i" is a TASKalfa 4002i: an i/ci
+ * suffix, a 3-digit number (CS 306ci) or one ending 1–4 (CS 2552, CS 6053). The older 4-digit
+ * NNN0/NNN5 ones without an i (CS 2050, CS 3035) are the KM copiers. Kyocera only: Lexmark has
+ * its own CS series (CS410dn). MUST match mm_parse() in the generated lookup SQL.
+ */
+export function copystar(base: string, variant: string): { base: string; line: string } | null {
+  const m = base.match(/^CS(\d{3,4})$/)
+  if (!m) return null
+  const n = m[1]
+  return /^C?I/.test(variant) || n.length === 3 || /[1-4]$/.test(n) ? { base: n, line: 'TASKALFA' } : { base: 'KM' + n, line: '' }
+}
+
 export function parse(raw: string, opts: { mfr?: string; desc?: string } = {}): Parsed {
   const given = opts.mfr ? canonMfr(opts.mfr) : ''
   // A brand spelled out in the model name beats the manufacturer column (source columns can be wrong).
@@ -199,14 +212,17 @@ export function parse(raw: string, opts: { mfr?: string; desc?: string } = {}): 
   let p = parseName(raw)
   if (!p && opts.desc) p = parseName(opts.desc)
   if (p) {
+    const line = detectLine(raw, opts.desc ?? '')
+    const cs = det.mfr === 'Kyocera' ? copystar(p.base, p.variant) : null
+    const base = cs?.base ?? p.base
     return {
       mfr: det.mfr,
-      base: p.base,
+      base,
       variant: p.variant,
-      key: `${mfrKey(det.mfr)}|${p.base}`,
+      key: `${mfrKey(det.mfr)}|${base}`,
       hasCore: true,
       mfrFromHint: det.hint,
-      line: detectLine(raw, opts.desc ?? ''),
+      line: line || cs?.line || '',
       gen: p.gen,
       mfrConflict,
     }
