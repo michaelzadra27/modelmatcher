@@ -46,9 +46,10 @@ language sql immutable set search_path = public as $$
     (1, 'Ricoh', '^(IM|MP|SP)[ -]?[A-Z]?\d'),
     (2, 'Brother', '^(HL|MFC|DCP)[ -]?[A-Z]?\d'),
     (3, 'Kyocera', '^FS[ -]?\d'),
-    (4, 'Sharp', '^MX[ -]?[A-Z]?\d'),
-    (5, 'Epson', '^SC[ -]?[A-Z]\d'),
-    (6, 'Toshiba', '^E?[ -]?STUDIO')
+    (4, 'Kyocera', '^(COPYSTAR )?CS[ -]?\d{4}C?I\y'),
+    (5, 'Sharp', '^MX[ -]?[A-Z]?\d'),
+    (6, 'Epson', '^SC[ -]?[A-Z]\d'),
+    (7, 'Toshiba', '^E?[ -]?STUDIO')
   ) as b(ord, mfr, re) where p_upper ~ b.re order by b.ord limit 1
 $$;
 

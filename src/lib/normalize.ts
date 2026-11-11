@@ -53,6 +53,8 @@ export const HINTS: [string, RegExp][] = [
   ['Ricoh', /^(IM|MP|SP)[ -]?[A-Z]?\d/],
   ['Brother', /^(HL|MFC|DCP)[ -]?[A-Z]?\d/],
   ['Kyocera', /^FS[ -]?\d/],
+  // Copystar "CS 4002i" / "CS 2552ci" (Lexmark's CS models are 3-digit, never end in i).
+  ['Kyocera', /^(COPYSTAR )?CS[ -]?\d{4}C?I\b/],
   ['Sharp', /^MX[ -]?[A-Z]?\d/],
   ['Epson', /^SC[ -]?[A-Z]\d/],
   ['Toshiba', /^E?[ -]?STUDIO/],
