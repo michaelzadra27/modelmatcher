@@ -24,7 +24,8 @@ export interface BatchMatch {
 export interface Toner { canonical_key: string; type: string | null; color: string | null; sku: string; cost: number | null; yield_pages: number | null; source: string | null }
 
 const MIN_CONFIDENCE = 0.7 // same bar as the database's resolve_model
-const CHUNK = 500 // names per lookup_models call
+const CHUNK = 200 // names per lookup_models call (~1s each; the public key's statement timeout is ~3s)
+const PARALLEL = 3 // lookup_models calls in flight at once
 
 export function createModelMaster(url: string, key: string) {
   const cache = new Map<string, Promise<any>>()
@@ -49,10 +50,16 @@ export function createModelMaster(url: string, key: string) {
 
   async function lookupMany(names: string[], mfrs?: (string | null | undefined)[]): Promise<BatchMatch[]> {
     const out: BatchMatch[] = new Array(names.length)
+    // Each distinct uncached (name, manufacturer) once, in chunks, PARALLEL calls at a time.
+    const seen = new Set<string>()
     const todo: number[] = []
-    names.forEach((n, i) => (cache.has(nameKey(n, mfrs?.[i] ?? '') + '|batch') ? null : todo.push(i)))
-    for (let s = 0; s < todo.length; s += CHUNK) {
-      const part = todo.slice(s, s + CHUNK)
+    names.forEach((n, i) => {
+      const k = nameKey(n, mfrs?.[i] ?? '') + '|batch'
+      if (!cache.has(k) && !seen.has(k)) seen.add(k), todo.push(i)
+    })
+    const chunks: number[][] = []
+    for (let s = 0; s < todo.length; s += CHUNK) chunks.push(todo.slice(s, s + CHUNK))
+    const run = async (part: number[]) => {
       const rows = await rpc<any[]>('lookup_models', { p_names: part.map((i) => names[i]), p_mfrs: mfrs ? part.map((i) => mfrs[i] ?? null) : null })
       rows.forEach((r, j) => {
         const i = part[j]
@@ -61,6 +68,10 @@ export function createModelMaster(url: string, key: string) {
         cache.set(nameKey(names[i], mfrs?.[i] ?? '') + '|batch', Promise.resolve({ match, ambiguous }))
       })
     }
+    let next = 0
+    await Promise.all(Array.from({ length: Math.min(PARALLEL, chunks.length) }, async () => {
+      while (next < chunks.length) await run(chunks[next++])
+    }))
     for (let i = 0; i < names.length; i++) out[i] = { name: names[i], ...(await cache.get(nameKey(names[i], mfrs?.[i] ?? '') + '|batch')) }
     return out
   }
