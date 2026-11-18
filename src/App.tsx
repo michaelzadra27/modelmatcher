@@ -11,7 +11,8 @@ import { parse } from './lib/normalize'
 import { rowCtx } from './lib/match'
 import { tonersForModel } from './lib/toner'
 import { exportMaster } from './lib/workbook'
-import { StaleError, cloudConfigured, pull, push, supabase } from './lib/cloud'
+import { cloudConfigured, push, supabase } from './lib/cloud'
+import { discardStuck, refresh, retryNow, useSyncStatus } from './lib/sync'
 
 type Tab = 'import' | 'inbox' | 'master' | 'catalog' | 'capture' | 'cloud'
 
@@ -20,6 +21,7 @@ const TABS: Tab[] = ['inbox', 'catalog', 'master', 'capture', 'import', 'cloud']
 export default function App() {
   const state = useModelState()
   const saveError = useSaveError()
+  const sync = useSyncStatus()
   const [masterOpen, setMasterOpen] = useState<string | null>(null)
   // Names the user sent from "pick the right model" to "new models" (this session only).
   const [forceNew, setForceNew] = useState<Set<string>>(new Set())
@@ -35,8 +37,8 @@ export default function App() {
       ? `Inbox${box.names ? ` (${box.names.toLocaleString()})` : ''}`
       : t === 'master'
         ? `Master (${state.canonicals.length})`
-        : t === 'cloud' && state.dirty
-          ? 'Cloud ● unpushed'
+        : t === 'cloud'
+          ? 'Account'
           : t[0].toUpperCase() + t.slice(1)
 
   return (
@@ -51,12 +53,26 @@ export default function App() {
           ))}
         </nav>
         <div className="spacer" />
+        <SyncBadge go={() => setTab('cloud')} />
         <button className="btn primary" onClick={doExport} disabled={!Object.keys(state.sources).length && !state.canonicals.length}>
           Export workbook
         </button>
       </header>
       <main>
         {saveError && <div className="toast" style={{ borderColor: 'var(--bad)', color: 'var(--bad)' }}>{saveError}</div>}
+        {cloudConfigured && !sync.canWrite && (
+          <div className="warnbox">Read-only: you're not signed in, so you can look things up but not change them. <button className="linklike" onClick={() => setTab('cloud')}>Sign in</button></div>
+        )}
+        {sync.error && (
+          <div className="warnbox">
+            A change couldn't be saved to the cloud yet: {sync.error}. It's kept and retried automatically.{' '}
+            <button className="linklike" onClick={retryNow}>Retry now</button>{' · '}
+            <button className="linklike" onClick={() => confirm('Drop the change that keeps failing and reload from the cloud? That change is lost.') && discardStuck()}>Drop it and reload</button>
+          </div>
+        )}
+        {state.pendingImport.length > 0 && tab !== 'import' && (
+          <div className="warnbox">Imported sheet{state.pendingImport.length > 1 ? 's' : ''} not saved to the cloud yet: {state.pendingImport.join(', ')}. <button className="linklike" onClick={() => setTab('import')}>Review and save</button></div>
+        )}
         {tab === 'import' && <ImportTab state={state} box={box} go={setTab} />}
         {tab === 'inbox' && <InboxTab state={state} box={box} sendToNew={(k) => setForceNew((s) => new Set(s).add(k))} goImport={() => setTab('import')} />}
         {tab === 'master' && <MasterTab key={masterOpen ?? ''} state={state} initialId={masterOpen} />}
@@ -102,8 +118,6 @@ function ImportTab({ state, box, go }: { state: State; box: InboxLanes; go: (t: 
       >
         <p style={{ margin: '0 0 10px' }}>
           {busy ? 'Reading…' : 'Drop an Excel workbook here. Each tab becomes a source; column A is the model name.'}
-          <br />
-          Drop a previously exported <b>Model Master.xlsx</b> to continue from where you left off.
         </p>
         <label className="btn">
           Choose files…
@@ -128,6 +142,20 @@ function ImportTab({ state, box, go }: { state: State; box: InboxLanes; go: (t: 
               </button>
             </>
           )}
+        </div>
+      )}
+
+      {state.pendingImport.length > 0 && (
+        <div className="card" style={{ marginTop: 12, borderColor: 'var(--accent)' }}>
+          <b>Preview: not saved yet.</b>{' '}
+          {state.pendingImport.map((n) => `${n} (${(state.sources[n]?.rows.length ?? 0).toLocaleString()} names)`).join(', ')}.
+          <div className="mute" style={{ margin: '6px 0 10px' }}>
+            Check the column roles below (and the Inbox if you like), then save. Until then only this browser has it; discarding reloads from the cloud.
+          </div>
+          <div className="row">
+            <button className="btn primary" onClick={() => { actions.saveImport(); setMsg('Saving the import to the cloud…'); setAuto(0) }}>Save to cloud</button>
+            <button className="btn" onClick={() => confirm('Discard this import? Decisions made on these names since importing are lost too.') && actions.discardImport().then((ok) => setMsg(ok ? 'Import discarded.' : "Couldn't reload from the cloud (are you signed in?)."))}>Discard</button>
+          </div>
         </div>
       )}
 
@@ -157,8 +185,8 @@ function ImportTab({ state, box, go }: { state: State; box: InboxLanes; go: (t: 
                 ) : (
                   <button
                     className="btn"
-                    onClick={() => {
-                      const r = actions.buildMaster(s.name)
+                    onClick={async () => {
+                      const r = await actions.buildMaster(s.name)
                       setMsg(`Master list built from "${s.name}": ${r.created} models created${r.flagged ? `, ${r.flagged} groups left in the Inbox to check` : ''}. Names from other sheets are matched against these models.`)
                     }}
                   >
@@ -188,9 +216,6 @@ function ImportTab({ state, box, go }: { state: State; box: InboxLanes; go: (t: 
               </table>
             </div>
           ))}
-          <button className="btn danger" onClick={() => confirm('Clear everything in this browser? Export first if you need it.') && actions.reset()}>
-            Clear all data
-          </button>
         </>
       )}
     </>
@@ -413,60 +438,59 @@ function CanonicalEditor({ c, state, close }: { c: Canonical; state: State; clos
   )
 }
 
-/* ───────────────────────── Cloud (Supabase) ───────────────────────── */
+/* ───────────────────────── Save status + Account ───────────────────────── */
+
+function SyncBadge({ go }: { go: () => void }) {
+  const sync = useSyncStatus()
+  if (!cloudConfigured) return null
+  const [text, color] = !sync.canWrite
+    ? ['Read-only', 'var(--mute)']
+    : sync.error
+      ? [`${sync.pending} change${sync.pending === 1 ? '' : 's'} not saved`, 'var(--bad)']
+      : sync.saving || sync.pending
+        ? ['Saving…', 'var(--mute)']
+        : sync.refreshing
+          ? ['Refreshing…', 'var(--mute)']
+          : ['✓ All saved', 'var(--mute)']
+  return (
+    <button className="linklike" style={{ color, marginRight: 12 }} onClick={go} title="Changes save to the cloud as you make them">
+      {text}
+    </button>
+  )
+}
 
 function CloudTab({ state }: { state: State }) {
+  const sync = useSyncStatus()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [user, setUser] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const [err, setErr] = useState('')
-  const [stale, setStale] = useState(false)
-
-  useEffect(() => {
-    if (!supabase) return
-    supabase.auth.getSession().then(({ data }) => setUser(data.session?.user.email ?? null))
-    const { data } = supabase.auth.onAuthStateChange((_e, s) => setUser(s?.user.email ?? null))
-    return () => data.subscription.unsubscribe()
-  }, [])
 
   if (!cloudConfigured || !supabase)
     return (
       <div className="card">
         <h2>Connect Supabase</h2>
-        <ol>
-          <li>Create a Supabase project and run <code>supabase/migrations/0001_init.sql</code> in the SQL editor.</li>
-          <li>Authentication → Users → add a user (email + password) for yourself.</li>
-          <li>Copy <code>.env.example</code> to <code>.env.local</code> and fill in the project URL and <b>anon</b> key (Project Settings → API), then restart the dev server.</li>
-        </ol>
+        <p>Copy <code>.env.example</code> to <code>.env.local</code>, fill in the project URL and publishable key, then restart the dev server.</p>
       </div>
     )
 
   const run = async (fn: () => Promise<string>) => {
     setBusy(true)
     setErr('')
-    setStale(false)
     try {
       setMsg(await fn())
     } catch (e) {
       setErr((e as Error).message)
-      setStale(e instanceof StaleError)
     }
     setBusy(false)
   }
-  const doPush = (force: boolean) =>
-    run(async () => {
-      const snapshot = state
-      const r = await push(snapshot, setMsg, { force })
-      actions.markPushed(snapshot, r.syncedAt)
-      return r.msg
-    })
 
-  if (!user)
+  if (!sync.canWrite)
     return (
       <div className="card" style={{ maxWidth: 420 }}>
         <h2>Sign in</h2>
+        <p className="mute">Signed out, ModelMaster is read-only. Sign in to make changes; they save to the cloud as you go.</p>
         <div className="fields" style={{ gridTemplateColumns: '1fr' }}>
           <input placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
           <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} />
@@ -491,44 +515,45 @@ function CloudTab({ state }: { state: State }) {
   return (
     <div className="card">
       <div className="row">
-        <span>Signed in as <b>{user}</b></span>
+        <span>Signed in as <b>{sync.email}</b></span>
         <div className="spacer" />
         <button className="btn" onClick={() => supabase!.auth.signOut()}>Sign out</button>
       </div>
       <p className="mute">
-        Local: {state.canonicals.length.toLocaleString()} models, {Object.values(state.sources).reduce((n, s) => n + s.rows.length, 0).toLocaleString()} names.
-        {state.syncedAt ? ` Last synced with the cloud ${new Date(state.syncedAt).toLocaleString()}.` : ' Not synced with the cloud yet in this browser.'}
-        {' '}Push saves this copy to the cloud. Pull replaces this copy with the cloud's.
+        Changes save to the cloud as you make them. This browser keeps a copy so screens are fast: {state.canonicals.length.toLocaleString()} models,{' '}
+        {Object.values(state.sources).reduce((n, s) => n + s.rows.length, 0).toLocaleString()} names
+        {sync.lastRefresh ? `, refreshed from the cloud ${new Date(sync.lastRefresh).toLocaleString()}` : ''}. It refreshes when the app opens and when you come back to the tab.
       </p>
-      {state.dirty ? (
-        <div className="warnbox">You have changes in this browser that aren't in the cloud yet. Push to save them.</div>
-      ) : state.syncedAt ? (
-        <div className="mute" style={{ marginBottom: 10 }}>✓ Everything here is in the cloud.</div>
-      ) : null}
+      <div className="mute" style={{ marginBottom: 10 }}>
+        {sync.error ? `⚠ ${sync.pending} change(s) waiting: ${sync.error}` : sync.pending ? `Saving ${sync.pending} change(s)…` : '✓ Everything is saved.'}
+      </div>
       <div className="row">
-        <button className="btn primary" disabled={busy} onClick={() => doPush(false)}>Push to cloud</button>
-        {stale && (
-          <button className="btn danger" disabled={busy} onClick={() => confirm('Overwrite the cloud with this copy? Anything pushed since your last Pull is undone.') && doPush(true)}>
-            Push anyway
-          </button>
-        )}
         <button
           className="btn"
-          disabled={busy}
-          onClick={() =>
-            confirm('Replace local data with the cloud copy? Unpushed local work is lost.') &&
-            run(async () => {
-              const next = await pull(setMsg)
-              actions.replace(next)
-              return `Pulled ${next.canonicals.length} models and ${Object.values(next.sources).reduce((n, s) => n + s.rows.length, 0).toLocaleString()} names.`
-            })
-          }
+          disabled={busy || sync.refreshing}
+          onClick={() => run(async () => ((await refresh()) ? 'Refreshed from the cloud.' : state.pendingImport.length ? 'Save or discard the import first.' : 'Not refreshed.'))}
         >
-          Pull from cloud
+          {sync.refreshing ? 'Refreshing…' : 'Refresh from cloud'}
         </button>
       </div>
       {msg && <div className="toast">{msg}</div>}
       {err && <div className="warnbox">{err}</div>}
+      <details style={{ marginTop: 16 }}>
+        <summary className="mute">Advanced</summary>
+        <p className="mute">
+          Rewrite the whole cloud from this browser's copy (the old Push). Only for recovery: it overwrites anything changed elsewhere since this copy was refreshed.
+        </p>
+        <button
+          className="btn danger"
+          disabled={busy || sync.pending > 0}
+          onClick={() =>
+            confirm('Rewrite the whole cloud from this copy? Changes made elsewhere since your last refresh are undone.') &&
+            run(async () => (await push(state, setMsg, { force: true })).msg)
+          }
+        >
+          Full push (recovery)
+        </button>
+      </details>
     </div>
   )
 }

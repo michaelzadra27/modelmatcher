@@ -11,21 +11,21 @@ const anon = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
 export const cloudConfigured = Boolean(url && anon && !url.includes('YOUR-PROJECT'))
 export const supabase: SupabaseClient | null = cloudConfigured ? createClient(url!, anon!) : null
 
-type Progress = (msg: string) => void
+export type Progress = (msg: string) => void
 
-const chunks = <T,>(a: T[], n: number) => Array.from({ length: Math.ceil(a.length / n) }, (_, i) => a.slice(i * n, i * n + n))
+export const chunks = <T,>(a: T[], n: number) => Array.from({ length: Math.ceil(a.length / n) }, (_, i) => a.slice(i * n, i * n + n))
 
-async function must<T>(q: PromiseLike<{ data: T | null; error: { message: string } | null }>, what: string): Promise<T> {
+export async function must<T>(q: PromiseLike<{ data: T | null; error: { message: string } | null }>, what: string): Promise<T> {
   const { data, error } = await q
   if (error) throw new Error(`${what}: ${error.message}`)
   return (data ?? ([] as unknown)) as T
 }
 
-const toInt = (s: string) => {
+export const toInt = (s: string) => {
   const n = parseInt(s.replace(/[^\d-]/g, ''), 10)
   return Number.isFinite(n) ? n : null
 }
-const toPrice = (s: string) => {
+export const toPrice = (s: string) => {
   const n = parseFloat(s.replace(/[^\d.\-]/g, ''))
   return Number.isFinite(n) ? n : null
 }
@@ -37,7 +37,7 @@ const yn = (v: string) => (v === 'yes' ? true : v === 'no' ? false : null)
  * fills missing ones with NULL, so mixing them would null `attributes` (NOT NULL) — and sending
  * blank spec columns for spec-less models would wipe specs loaded in the database by other means.
  */
-function specColumns(spec: Canonical['spec']): Record<string, unknown> {
+export function specColumns(spec: Canonical['spec']): Record<string, unknown> {
   if (!spec) return {}
   return {
     full_name: spec.fullName || null,

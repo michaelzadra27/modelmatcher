@@ -69,9 +69,14 @@ export interface ImportResult {
   summary: string
 }
 
-export async function importFile(file: File, state: State): Promise<ImportResult> {
+export async function importFile(file: File, state: State, opts: { allowMaster?: boolean } = {}): Promise<ImportResult> {
   const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' })
-  if (MASTER_SHEETS.every((n) => wb.SheetNames.includes(n))) return importMaster(wb, state, file.name)
+  if (MASTER_SHEETS.every((n) => wb.SheetNames.includes(n))) {
+    // A whole-database backup. Loading it would replace everything at once, which only the old
+    // whole-copy Push could save; the cloud is the source of truth now.
+    if (!opts.allowMaster) throw new Error('this is a ModelMaster export (a backup of the whole database), not a sheet of names. The cloud already has everything; to restore a backup, ask for a database restore')
+    return importMaster(wb, state, file.name)
+  }
 
   const next: State = { ...state, sources: { ...state.sources } }
   const parts: string[] = []

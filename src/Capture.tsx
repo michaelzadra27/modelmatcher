@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react'
 import { CaptureResult, captureSpec } from './lib/bli/capture'
 import { canonMfr } from './lib/normalize'
-import { cloudConfigured, cloudMaxId, cloudStamp, pushCapture, signedIn } from './lib/cloud'
-import { actions, getState } from './lib/store'
+import { flush, getSyncStatus } from './lib/sync'
+import { actions } from './lib/store'
 import { DeviceSpec, SPEC_GROUPS, State, modelLabel } from './lib/types'
 import ModelPicker from './ModelPicker'
 
@@ -39,19 +39,6 @@ export default function CaptureTab({ state }: { state: State }) {
     if (!cap || !spec || saving) return
     setSaving(true)
     setCloudNote(null)
-    // Cloud first-steps: is this copy current with the cloud, and what's the cloud's highest key?
-    const pre = getState()
-    let online = cloudConfigured && (await signedIn().catch(() => false))
-    let current = false
-    if (online) {
-      try {
-        const [stamp, maxId] = await Promise.all([cloudStamp(), target ? Promise.resolve(0) : cloudMaxId()])
-        current = Boolean(pre.syncedAt) && (!stamp || Date.parse(stamp) <= Date.parse(pre.syncedAt))
-        if (!target) actions.reserveIdsAbove(maxId)
-      } catch {
-        online = false
-      }
-    }
     const before = targetModel?.spec
     const changed = before ? specFields.filter((k) => String(before[k] ?? '') !== String(spec[k] ?? '')).length : 0
     const identity = {
@@ -67,25 +54,22 @@ export default function CaptureTab({ state }: { state: State }) {
       toner: '',
       notes: '',
     }
-    const id = actions.saveCapture({ modelId: target || null, identity, spec, supplies: cap.supplies, name: cap.name })
-    const afterSave = getState()
-    if (!online) {
-      setCloudNote({ ok: false, msg: cloudConfigured ? 'Not signed in to the cloud, so it was saved in this browser only — sign in on the Cloud tab and Push to send it.' : 'Saved in this browser only (no cloud configured).' })
-    } else {
-      try {
-        await pushCapture(getState(), id, cap.name)
-        // The copy was current and the write came from it, so it's still current; only earlier
-        // unpushed work keeps it marked unpushed. If it was behind, leave it: Push will ask for a Pull.
-        if (current) actions.markCaptureSynced(await cloudStamp(), pre.dirty || getState() !== afterSave)
-        setCloudNote({
-          ok: true,
-          msg: current && pre.dirty ? 'Saved to the cloud. You still have other unpushed changes — Push from the Cloud tab when ready.'
-            : current ? 'Saved to the cloud.'
-            : 'Saved to the cloud. This copy was already behind the cloud, so Pull before your next Push.',
-        })
-      } catch (e) {
-        setCloudNote({ ok: false, msg: `Couldn't save to the cloud (${(e as Error).message}). It's kept in this browser and marked unpushed — Push from the Cloud tab to send it.` })
-      }
+    let id: string | null = null
+    try {
+      id = await actions.saveCapture({ modelId: target || null, identity, spec, supplies: cap.supplies, name: cap.name })
+    } catch (e) {
+      setCloudNote({ ok: false, msg: `Couldn't save (${(e as Error).message}).` })
+    }
+    if (!id) {
+      setSaving(false)
+      if (!getSyncStatus().canWrite) setCloudNote({ ok: false, msg: 'Read-only: sign in on the Account tab to save captures.' })
+      return
+    }
+    try {
+      await flush()
+      setCloudNote({ ok: true, msg: 'Saved to the cloud.' })
+    } catch (e) {
+      setCloudNote({ ok: false, msg: `Not saved to the cloud yet (${(e as Error).message}). It's queued and will retry; see the status at the top.` })
     }
     setSaving(false)
     const label = targetModel ? modelLabel(targetModel) : [mfr, model].filter(Boolean).join(' ')

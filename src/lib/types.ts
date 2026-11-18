@@ -213,9 +213,15 @@ export interface State {
   capturedSupplies: Record<string, SupplyRec[]> // model id → supplies from a BLI capture
   /** The cloud's last-change time when this copy last pulled or pushed ('' = never synced). Push refuses if the cloud moved on since. */
   syncedAt: string
-  /** Local changes not pushed yet. */
+  /** Local changes not pushed yet (legacy Push/Pull flow; unused now that changes save directly). */
   dirty: boolean
+  /** MM keys reserved from the database (next_model_keys) and not used yet. */
+  keyPool: string[]
+  /** Sheets imported in this browser but not saved to the cloud yet (import preview). */
+  pendingImport: string[]
+  /** Review-log entries about pending sheets, sent when the import is saved. */
+  heldLog: LogEntry[]
 }
 
-export const emptyState = (): State => ({ sources: {}, canonicals: [], links: {}, log: [], deleted: [], nextId: 1, redirects: {}, master: '', capturedSupplies: {}, syncedAt: '', dirty: false })
+export const emptyState = (): State => ({ sources: {}, canonicals: [], links: {}, log: [], deleted: [], nextId: 1, redirects: {}, master: '', capturedSupplies: {}, syncedAt: '', dirty: false, keyPool: [], pendingImport: [], heldLog: [] })
 export const linkKey = (source: string, raw: string) => `${source}\u0001${raw}`
