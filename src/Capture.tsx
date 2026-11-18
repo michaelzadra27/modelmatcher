@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import { CaptureResult, captureSpec } from './lib/bli/capture'
 import { canonMfr } from './lib/normalize'
-import { actions } from './lib/store'
+import { cloudConfigured, cloudMaxId, cloudStamp, pushCapture, signedIn } from './lib/cloud'
+import { actions, getState } from './lib/store'
 import { DeviceSpec, SPEC_GROUPS, State, modelLabel } from './lib/types'
 import ModelPicker from './ModelPicker'
 
@@ -17,6 +18,8 @@ export default function CaptureTab({ state }: { state: State }) {
   const [mfr, setMfr] = useState('')
   const [model, setModel] = useState('')
   const [saved, setSaved] = useState('')
+  const [cloudNote, setCloudNote] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [saving, setSaving] = useState(false)
 
   const parse = () => {
     const c = captureSpec(text, state)
@@ -26,13 +29,29 @@ export default function CaptureTab({ state }: { state: State }) {
     setMfr(canonMfr(c.result.device.manufacturer ?? ''))
     setModel(c.result.device.model ?? '')
     setSaved('')
+    setCloudNote(null)
   }
 
   const candidate = cap?.candidateId ? state.canonicals.find((c) => c.id === cap.candidateId) : null
   const targetModel = target ? state.canonicals.find((c) => c.id === target) ?? null : null
 
-  const save = () => {
-    if (!cap || !spec) return
+  const save = async () => {
+    if (!cap || !spec || saving) return
+    setSaving(true)
+    setCloudNote(null)
+    // Cloud first-steps: is this copy current with the cloud, and what's the cloud's highest key?
+    const pre = getState()
+    let online = cloudConfigured && (await signedIn().catch(() => false))
+    let current = false
+    if (online) {
+      try {
+        const [stamp, maxId] = await Promise.all([cloudStamp(), target ? Promise.resolve(0) : cloudMaxId()])
+        current = Boolean(pre.syncedAt) && (!stamp || Date.parse(stamp) <= Date.parse(pre.syncedAt))
+        if (!target) actions.reserveIdsAbove(maxId)
+      } catch {
+        online = false
+      }
+    }
     const before = targetModel?.spec
     const changed = before ? specFields.filter((k) => String(before[k] ?? '') !== String(spec[k] ?? '')).length : 0
     const identity = {
@@ -49,6 +68,26 @@ export default function CaptureTab({ state }: { state: State }) {
       notes: '',
     }
     const id = actions.saveCapture({ modelId: target || null, identity, spec, supplies: cap.supplies, name: cap.name })
+    const afterSave = getState()
+    if (!online) {
+      setCloudNote({ ok: false, msg: cloudConfigured ? 'Not signed in to the cloud, so it was saved in this browser only — sign in on the Cloud tab and Push to send it.' : 'Saved in this browser only (no cloud configured).' })
+    } else {
+      try {
+        await pushCapture(getState(), id, cap.name)
+        // The copy was current and the write came from it, so it's still current; only earlier
+        // unpushed work keeps it marked unpushed. If it was behind, leave it: Push will ask for a Pull.
+        if (current) actions.markCaptureSynced(await cloudStamp(), pre.dirty || getState() !== afterSave)
+        setCloudNote({
+          ok: true,
+          msg: current && pre.dirty ? 'Saved to the cloud. You still have other unpushed changes — Push from the Cloud tab when ready.'
+            : current ? 'Saved to the cloud.'
+            : 'Saved to the cloud. This copy was already behind the cloud, so Pull before your next Push.',
+        })
+      } catch (e) {
+        setCloudNote({ ok: false, msg: `Couldn't save to the cloud (${(e as Error).message}). It's kept in this browser and marked unpushed — Push from the Cloud tab to send it.` })
+      }
+    }
+    setSaving(false)
     const label = targetModel ? modelLabel(targetModel) : [mfr, model].filter(Boolean).join(' ')
     setSaved(
       !targetModel
@@ -67,12 +106,16 @@ export default function CaptureTab({ state }: { state: State }) {
       <div>
         <div className="card">
           <h2>Capture a BLI spec</h2>
-          <p className="mute">Paste a BLI columnar spec export below. It's parsed in your browser, matched to a canonical model, then you review and save.</p>
+          <p className="mute">Paste a BLI columnar spec export below. It's parsed in your browser, matched to a canonical model, then you review and save. Saving writes it straight to the cloud (when signed in), so it shows up in the Catalog and other apps right away.</p>
           <textarea rows={14} style={{ fontFamily: 'monospace', fontSize: 12 }} value={text} onChange={(e) => setText(e.target.value)} placeholder="Paste the full BLI spec sheet text here…" />
           <div className="row" style={{ marginTop: 10 }}>
             <button className="btn primary" disabled={!text.trim()} onClick={parse}>Parse</button>
           </div>
-          {saved && <div className="toast" style={{ marginTop: 10, marginBottom: 0 }}>{saved} Push from the Cloud tab to save it to Supabase.</div>}
+          {saved && (
+            <div className="toast" style={{ marginTop: 10, marginBottom: 0, ...(cloudNote && !cloudNote.ok ? { borderColor: 'var(--warn)', color: 'var(--warn)' } : {}) }}>
+              {saved} {cloudNote?.msg ?? ''}
+            </div>
+          )}
         </div>
       </div>
     )
@@ -153,8 +196,8 @@ export default function CaptureTab({ state }: { state: State }) {
         <ExtraFields spec={spec} />
 
         <div className="row">
-          <button className="btn primary" disabled={!target && !model.trim()} onClick={save}>
-            {target ? `Save spec to ${target}` : 'Create model + save spec'}
+          <button className="btn primary" disabled={saving || (!target && !model.trim())} onClick={save}>
+            {saving ? 'Saving to the cloud…' : target ? `Save spec to ${target}` : 'Create model + save spec'}
           </button>
         </div>
       </div>

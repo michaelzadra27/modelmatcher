@@ -303,4 +303,18 @@ export const actions = {
   reset() {
     set(emptyState(), true)
   },
+
+  /** Make sure the next new MM key is above `n` (the cloud's highest), so keys never collide. */
+  reserveIdsAbove(n: number) {
+    if (state.nextId <= n) set({ ...state, nextId: n + 1 }, true)
+  },
+
+  /**
+   * A capture was written straight to the cloud. The copy now matches the cloud as of `syncedAt`
+   * (it was current before the write, and the write came from it); it stays marked unpushed only
+   * if it had other unpushed changes before the capture.
+   */
+  markCaptureSynced(syncedAt: string, dirty: boolean) {
+    set({ ...state, syncedAt, dirty }, true)
+  },
 }

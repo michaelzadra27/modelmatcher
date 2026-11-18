@@ -320,16 +320,118 @@ export async function push(state: State, say: Progress, opts: { force?: boolean 
     for (const part of chunks(state.deleted, 100)) await must(sb.from('models').delete().in('canonical_key', part), 'delete models')
   }
 
-  // Review log: replace the stored entries for the sources being pushed with the local log.
+  // Review log: replace the stored entries for every source in the local log (and the sheets being
+  // pushed) with the local log. Clearing only the pushed sheets used to re-copy entries from other
+  // sources (BLI Capture, merges, sheets no longer loaded) on every push.
   say('Review log…')
   if (state.log.length) {
-    await must(sb.from('review_log').delete().in('source', srcNames), 'log reset')
+    const logSources = [...new Set([...srcNames, ...state.log.map((l) => l.source || '')])]
+    for (const part of chunks(logSources, 100)) await must(sb.from('review_log').delete().in('source', part), 'log reset')
+    if (logSources.includes('')) await must(sb.from('review_log').delete().is('source', null), 'log reset')
     for (const part of chunks(state.log, 500))
       await must(sb.from('review_log').insert(part.map((l) => ({ source: l.source, raw_name: l.raw, decision: l.decision, model_key: l.canonicalId || null, decided_on: l.date }))), 'review log')
   }
 
   const syncedAt = await cloudStamp()
   return { msg: `Pushed ${canon.length} models, ${aliasOut.length.toLocaleString()} aliases, ${tonerCount.toLocaleString()} toner links (${skuSet.length} SKUs), ${priceCount.toLocaleString()} prices.`, syncedAt }
+}
+
+/** Signed in? Writes need an authenticated session (tables are authenticated-only). */
+export async function signedIn(): Promise<boolean> {
+  return Boolean(supabase && (await supabase.auth.getSession()).data.session)
+}
+
+/** The highest MM number the cloud has handed out (models + retired keys), so a new key can't collide. */
+export async function cloudMaxId(): Promise<number> {
+  const sb = supabase!
+  const top = async (table: string, col: string) =>
+    ((await must(sb.from(table).select(col).like(col, 'MM-%').order(col, { ascending: false }).limit(1), table)) as any[])[0]?.[col] ?? ''
+  const [a, b] = await Promise.all([top('models', 'canonical_key'), top('model_redirects', 'old_key')])
+  return Math.max(idNumber(a), idNumber(b))
+}
+
+/**
+ * Write one BLI capture straight to the cloud: the model (identity + spec), the captured name under
+ * the "BLI Capture" source, its BLI supplies, and a review-log entry. The rest of the copy is left
+ * for Push. Mirrors what push() writes for these rows, except supplies that already exist keep their
+ * cost/yield (a toner sheet's price wins over BLI's, as in push()).
+ */
+export async function pushCapture(state: State, id: string, name: string): Promise<void> {
+  const sb = supabase!
+  const c = state.canonicals.find((x) => x.id === id)
+  if (!c) throw new Error(`model ${id} not found in this copy`)
+
+  let manufacturer_id: string | null = null
+  if (c.manufacturer) {
+    const [m] = await must(sb.from('manufacturers').upsert({ name: c.manufacturer }, { onConflict: 'name' }).select('id'), 'manufacturer')
+    manufacturer_id = (m as any).id
+  }
+  const [row] = await must(
+    sb.from('models').upsert(
+      {
+        canonical_key: c.id,
+        manufacturer_id,
+        model: c.model,
+        generation: c.generation || null,
+        line: c.line || null,
+        family: c.family || null,
+        device_type: c.deviceType || null,
+        ppm: toInt(c.ppm),
+        color: c.color || null,
+        paper_size: c.paper || null,
+        toner_family: c.toner || null,
+        notes: c.notes || null,
+        ...specColumns(c.spec),
+      },
+      { onConflict: 'canonical_key' }
+    ).select('id'),
+    'model'
+  )
+  const modelId = (row as any).id as string
+
+  if (name) {
+    const capName = 'BLI Capture'
+    const src = state.sources[capName]
+    const [srcRow] = await must(sb.from('sources').upsert({ name: capName, column_roles: src?.roles ?? {} }, { onConflict: 'name' }).select('id'), 'source')
+    const v = parse(name, { mfr: c.manufacturer }).variant
+    let variant_id: string | null = null
+    if (v) {
+      const [vr] = await must(sb.from('model_variants').upsert({ model_id: modelId, variant: v }, { onConflict: 'model_id,variant' }).select('id'), 'variant')
+      variant_id = (vr as any).id
+    }
+    const r = src?.rows.find((x) => x.raw === name)
+    await must(
+      sb.from('model_aliases').upsert(
+        { source_id: (srcRow as any).id, raw_name: name, model_id: modelId, variant_id, status: 'linked', row_count: r?.count ?? 1, attributes: r?.attrs ?? {} },
+        { onConflict: 'source_id,raw_name' }
+      ),
+      'alias'
+    )
+  }
+
+  // BLI supplies (links with no source sheet) mirror this capture's list.
+  const bySku = new Map<string, { sku: string; color: string; supply_type: string; yield_pages: number | null; cost: number | null; description: string }>()
+  for (const t of state.capturedSupplies[id] ?? []) {
+    const sku = skuKey(t.sku)
+    if (sku && !bySku.has(sku)) bySku.set(sku, { sku, color: t.color || 'unknown', supply_type: t.type, yield_pages: t.yieldPages, cost: t.cost, description: t.raw || t.sku })
+  }
+  const keep: string[] = []
+  if (bySku.size) {
+    await must(sb.from('supplies').upsert([...bySku.values()], { onConflict: 'sku', ignoreDuplicates: true }), 'supplies')
+    const ids = (await must(sb.from('supplies').select('id,sku').in('sku', [...bySku.keys()]), 'supplies')) as any[]
+    // A toner sheet's link to the same supply wins (it carries the sheet's price), as in push().
+    const sheet = new Set(((await must(sb.from('model_supplies').select('supply_id').eq('model_id', modelId).not('source_id', 'is', null), 'toner links')) as any[]).map((x) => x.supply_id))
+    const links = ids
+      .filter((x) => !sheet.has(x.id))
+      .map((x) => ({ model_id: modelId, supply_id: x.id, source_id: null, cost: bySku.get(x.sku)!.cost, yield_pages: bySku.get(x.sku)!.yield_pages }))
+    if (links.length) await must(sb.from('model_supplies').upsert(links, { onConflict: 'model_id,supply_id' }), 'model_supplies')
+    keep.push(...ids.map((x) => x.id))
+  }
+  let drop = sb.from('model_supplies').delete().eq('model_id', modelId).is('source_id', null)
+  if (keep.length) drop = drop.not('supply_id', 'in', `(${keep.join(',')})`)
+  await must(drop, 'old BLI supplies')
+
+  await must(sb.from('review_log').insert({ source: 'BLI Capture', raw_name: name, decision: 'bli-capture', model_key: id, decided_on: new Date().toISOString().slice(0, 10) }), 'review log')
 }
 
 const str = (v: unknown) => (v == null ? '' : String(v))
@@ -444,7 +546,11 @@ export async function pull(say: Progress): Promise<State> {
     log.push(...rows)
     if (rows.length < 1000) break
   }
-  next.log = log.map((l) => ({ date: l.decided_on ?? '', source: l.source ?? '', raw: l.raw_name ?? '', decision: l.decision, canonicalId: l.model_key ?? '' }))
+  // Identical entries collapse to one (older pushes duplicated them).
+  const seenLog = new Set<string>()
+  next.log = log
+    .map((l) => ({ date: l.decided_on ?? '', source: l.source ?? '', raw: l.raw_name ?? '', decision: l.decision, canonicalId: l.model_key ?? '' }))
+    .filter((l) => { const k = JSON.stringify(l); return !seenLog.has(k) && !!seenLog.add(k) })
 
   // Supplies captured from BLI specs (links with no source sheet), so the Master editor shows them too.
   say('BLI supplies…')
