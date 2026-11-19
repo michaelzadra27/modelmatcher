@@ -3,7 +3,7 @@
 --   Xerox and Kyocera: all dealer (was: AltaLink/PrimeLink/TASKalfa dealer, the rest mostly unsure).
 --   Epson: WorkForce Enterprise dealer, everything else retail (was: SureColor/ColorWorks unsure).
 --   HP: PageWide P + 5 digits (P55250, P57750, P77440…) is Managed-only, so dealer like the E-series.
---       LaserJet Pro stored as "PRO-4201" and P2xxx LaserJets are retail (rule gaps in 0009).
+--       Every other LaserJet and PageWide (Pro, Enterprise, older models) is retail; PageWide XL unsure.
 --   (Wide format / label is now a separate field, category, from 0012.)
 -- Only the function changes; model_catalog picks it up as is. Safe to re-run.
 
@@ -15,15 +15,14 @@ returns text language sql immutable set search_path = public as $$
 
     -- HP: Managed devices are dealer: LaserJet/PageWide E + 4-5 digits, and PageWide P + 5 digits.
     -- (Managed versions of Enterprise models, like the M553xm, share the Enterprise model and are
-    -- recognised per device by name in the apps that read this.) DeskJet/OfficeJet, LaserJet Pro
-    -- (M1xx-M4xx, M1xxx, P/CP1xxx-2xxx, PRO-xxxx, the 3x01-4x03 Pro generation) and PageWide Pro are
-    -- retail. LaserJet Enterprise, DesignJet, Latex, PageWide XL and the rest sell both ways.
+    -- recognised per device by name in the apps that read this.) All other LaserJets (Pro and
+    -- Enterprise alike), PageWide (Pro, Enterprise), DeskJet and OfficeJet are retail. DesignJet,
+    -- Latex, PageWide XL and line-less models sell both ways (wide format is also category, 0012).
     when p_mfr = 'HP' then case
       when m ~ '^E\d{4,5}(\D|$)' then 'dealer'
       when l = 'PAGEWIDE' and m ~ '^P\d{5}(\D|$)' then 'dealer'
-      when l in ('DESKJET', 'OFFICEJET') then 'retail'
-      when l = 'PAGEWIDE' and m ~ '^PRO' then 'retail'
-      when l = 'LASERJET' and (m ~ '^PRO' or m ~ '^M[1-4]\d{2}(\D|$)' or m ~ '^M1\d{3}' or m ~ '^C?P[12]\d{3}' or m ~ '^[34]\d0[1-3](\D|$)') then 'retail'
+      when l in ('DESKJET', 'OFFICEJET', 'LASERJET') then 'retail'
+      when l = 'PAGEWIDE' and m !~ '^XL' then 'retail'
       else 'unsure' end
 
     -- Canon: imageRUNNER, its successor imageFORCE, and imagePRESS are dealer. imageCLASS, PIXMA,
