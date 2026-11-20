@@ -2,6 +2,7 @@
 -- Changes:
 --   Xerox and Kyocera: all dealer (was: AltaLink/PrimeLink/TASKalfa dealer, the rest mostly unsure).
 --   Epson: WorkForce Enterprise dealer, everything else retail (was: SureColor/ColorWorks unsure).
+--   Lexmark: all dealer except the Go Line entry models (was: 3-digit CS/CX/MS/MX unsure).
 --   HP: PageWide P + 5 digits (P55250, P57750, P77440…) is Managed-only, so dealer like the E-series.
 --       Every other LaserJet and PageWide (Pro, Enterprise, older models) is retail; PageWide XL unsure.
 --   (Wide format / label is now a separate field, category, from 0012.)
@@ -35,13 +36,10 @@ returns text language sql immutable set search_path = public as $$
       when l = '' and m ~ '^(G\d{3,4}|D1\d{3}|D5\d{2})(\D|$)' then 'retail'
       else 'unsure' end
 
-    -- Lexmark: the 4-digit contract twins of the standard models (XC/XM/M/C/B/MB/MC + 4 digits, e.g.
-    -- M3250 = MS621, XM3250 = MX622) are dealer, except the retail "Go Line" entry models. The standard
-    -- 3-digit CS/CX/MS/MX, legacy and vertical (ST/XS/TS/ES) models sell both ways.
+    -- Lexmark: dealer, except the retail "Go Line" entry models.
     when p_mfr = 'Lexmark' then case
       when m ~ '^(B2236|MB2236|C3224|C3326|C3426|MC3224|MC3326|MC3426)(\D|$)' then 'retail'
-      when m ~ '^(XC|XM|MB|MC|B|C|M)\d{4}(\D|$)' then 'dealer'
-      else 'unsure' end
+      else 'dealer' end
 
     -- Samsung: MultiXpress A3 (K/X + 4 digits, CLX-8xxx/9xxx, M4370/M5370) is dealer; the rest retail.
     when p_mfr = 'Samsung' then case
